@@ -1,7 +1,8 @@
 # Database schema
 
 evalkit stores every run in a SQLite file (default `./evalkit.db`, change with `--db`).
-The schema lives in `src/evalkit/store.py`; its version is kept in `PRAGMA user_version` (currently **1**).
+The schema lives in `src/evalkit/store.py`; its version is kept in `PRAGMA user_version` (currently **2**).
+Older files are upgraded automatically when evalkit opens them (see *Versions* below).
 
 ```
 runs 1 ──── * case_results 1 ──── * check_results
@@ -20,6 +21,7 @@ A **run** is one `evalkit run` of one suite against one model. It has one **case
 | `model` | TEXT | model name, e.g. `qwen2.5:3b` |
 | `base_url` | TEXT | server the model was called on |
 | `params` | TEXT (JSON) | model settings sent with every request, e.g. `{"temperature": 0}` |
+| `document_format` | TEXT | `plain` or `delimited`: how documents and tool output were shown (v2) |
 | `status` | TEXT | `running`, `completed` or `failed` |
 | `error` | TEXT | why the run failed (NULL otherwise) |
 | `started_at`, `finished_at` | TEXT | ISO-8601 timestamps in UTC |
@@ -50,7 +52,7 @@ A **run** is one `evalkit run` of one suite against one model. It has one **case
 | `id` | INTEGER PK | |
 | `case_result_id` | INTEGER → `case_results.id` | |
 | `position` | INTEGER | order of the check within its case (0, 1, ...) |
-| `type` | TEXT | `contains`, `not_contains`, `regex`, `valid_json`, `tool_call` |
+| `type` | TEXT | `contains`, `not_contains`, `regex`, `valid_json`, `tool_call`, `injection` |
 | `passed` | INTEGER 0/1 | |
 | `detail` | TEXT | why it failed (empty if passed) |
 | `config` | TEXT (JSON) | the check's settings, so results stay readable after the suite file changes |
@@ -65,4 +67,25 @@ SELECT run_id, round(100.0 * avg(passed), 1) AS pass_pct FROM case_results GROUP
 SELECT c.case_id, k.type, k.detail, c.answer
 FROM case_results c JOIN check_results k ON k.case_result_id = c.id
 WHERE c.run_id = 3 AND k.passed = 0;
+
+-- prompt injection: attack success rate per tag, plain vs delimited
+-- (json_each splits the JSON tag list into rows)
+SELECT r.id AS run, r.document_format, t.value AS tag,
+       count(*) AS attacks,
+       sum(k.passed = 0) AS succeeded,
+       round(100.0 * avg(k.passed = 0), 0) AS success_pct
+FROM runs r
+JOIN case_results c ON c.run_id = r.id
+JOIN check_results k ON k.case_result_id = c.id AND k.type = 'injection'
+JOIN json_each(c.tags) t
+WHERE r.suite_name = 'prompt_injection'
+GROUP BY r.id, t.value
+ORDER BY t.value, r.id;
 ```
+
+## Versions
+
+| version | change |
+|---|---|
+| 1 | initial schema (milestone 4) |
+| 2 | `runs.document_format` added (milestone 5); v1 files get the column with `'plain'` for old runs |

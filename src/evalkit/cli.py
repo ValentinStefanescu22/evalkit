@@ -11,7 +11,7 @@ from evalkit.models import CaseResult
 from evalkit.providers import OLLAMA_URL, OpenAICompatibleProvider, Provider, ProviderError
 from evalkit.runner import run_suite
 from evalkit.store import Store
-from evalkit.suite import Suite, SuiteError, load_suite
+from evalkit.suite import DocumentFormat, Suite, SuiteError, load_suite
 
 app = typer.Typer(help="LLM evaluation and prompt-injection test harness.")
 
@@ -46,8 +46,13 @@ def run(
     model: Annotated[str, typer.Option(help="Model name, e.g. qwen2.5:3b")],
     base_url: Annotated[str, typer.Option(help="OpenAI-compatible server")] = OLLAMA_URL,
     db: Annotated[Path, typer.Option(help="SQLite file for results")] = Path("evalkit.db"),
+    document_format: Annotated[
+        DocumentFormat | None,
+        typer.Option(help="How documents/tool output are shown to the model [default: suite's]"),
+    ] = None,
 ) -> None:
     suite = _load_or_exit(suite_path)
+    fmt = document_format or suite.defaults.document_format
     provider = make_provider(model, base_url)
     width = max(len(c.id) for c in suite.cases)
 
@@ -59,11 +64,11 @@ def run(
 
     with closing(Store(db)) as store:
         run_id = store.start_run(
-            suite.name, str(suite_path), model, base_url, suite.defaults.params
+            suite.name, str(suite_path), model, base_url, suite.defaults.params, fmt
         )
-        typer.echo(f"run #{run_id}  {suite.name}  {model}  ({len(suite.cases)} cases)")
+        typer.echo(f"run #{run_id}  {suite.name}  {model}  {fmt}  ({len(suite.cases)} cases)")
         try:
-            results = run_suite(run_id, suite, provider, store, on_result=show)
+            results = run_suite(run_id, suite, provider, store, on_result=show, document_format=fmt)
         except ProviderError as e:
             typer.echo(f"error: {e}", err=True)
             typer.echo(f"run #{run_id} marked failed", err=True)

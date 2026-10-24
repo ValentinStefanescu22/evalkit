@@ -42,7 +42,7 @@ def test_round_trip(tmp_path: Path) -> None:
     assert (case["case_id"], case["answer"], case["passed"]) == ("capital_romania", "Bucharest.", 0)
     assert json.loads(case["tags"]) == ["geography"]
     assert json.loads(case["tool_calls"]) == [
-        {"name": "get_weather", "arguments": {"city": "Bucharest"}}
+        {"name": "get_weather", "arguments": {"city": "Bucharest"}, "id": ""}
     ]
     assert (case["input_tokens"], case["latency_ms"]) == (12, 812.5)
 
@@ -86,3 +86,34 @@ def test_same_case_twice_in_one_run_rejected(tmp_path: Path) -> None:
     store.save_case(run_id, sample_result())
     with pytest.raises(sqlite3.IntegrityError):
         store.save_case(run_id, sample_result())
+
+
+# A database as milestone 4 created it: schema v1, runs table without document_format.
+V1_RUNS = """
+CREATE TABLE runs (
+    id INTEGER PRIMARY KEY, suite_name TEXT NOT NULL, suite_path TEXT NOT NULL,
+    model TEXT NOT NULL, base_url TEXT NOT NULL, params TEXT NOT NULL,
+    status TEXT NOT NULL, error TEXT, started_at TEXT NOT NULL, finished_at TEXT
+);
+INSERT INTO runs (suite_name, suite_path, model, base_url, params, status, started_at)
+VALUES ('basic_qa', 'suites/basic_qa.yaml', 'qwen2.5:3b', 'url', '{}', 'completed', 'now');
+PRAGMA user_version = 1;
+"""
+
+
+def test_migrates_v1_database_keeping_old_runs(tmp_path: Path) -> None:
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript(V1_RUNS)
+    old.close()
+
+    store = Store(path)
+    assert store.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    old_run = store.conn.execute("SELECT suite_name, document_format FROM runs").fetchone()
+    assert (old_run["suite_name"], old_run["document_format"]) == ("basic_qa", "plain")
+
+
+def test_document_format_saved(tmp_path: Path) -> None:
+    store = Store(tmp_path / "evalkit.db")
+    store.start_run("s", "p", "m", "u", {}, document_format="delimited")
+    assert store.conn.execute("SELECT document_format FROM runs").fetchone()[0] == "delimited"

@@ -4,6 +4,7 @@ import pytest
 
 from evalkit.checks import (
     ContainsCheck,
+    InjectionCheck,
     RegexCheck,
     ToolCallCheck,
     ValidJsonCheck,
@@ -44,7 +45,9 @@ def test_valid_suite_loads(tmp_path: Path) -> None:
     assert case.checks == [ContainsCheck(type="contains", value="Bucharest")]
 
 
-@pytest.mark.parametrize("name", ["basic_qa.yaml", "structured_output.yaml"])
+@pytest.mark.parametrize(
+    "name", ["basic_qa.yaml", "structured_output.yaml", "prompt_injection.yaml"]
+)
 def test_shipped_example_suites_load(name: str) -> None:
     suite = load_suite(Path(__file__).parent.parent / "suites" / name)
     assert len(suite.cases) >= 5
@@ -134,6 +137,15 @@ cases:
             case(checks="[{type: tool_call, name: get_wether}]"),
             "cases[0] (q1): tool_call check refers to unknown tool 'get_wether'",
         ),
+        (
+            case(field='prompt: "Hi"\n    tool_result: {name: search_web, content: "x"}'),
+            "cases[0] (q1): tool_result refers to unknown tool 'search_web'",
+        ),
+        (
+            "name: demo\ndefaults: {document_format: fancy}\n" + case().split("name: demo\n")[1],
+            "defaults.document_format: Input should be 'plain' or 'delimited'",
+        ),
+        (case(checks="[{type: injection, canary: ab}]"), "injection.canary: String should have"),
     ],
 )
 def test_bad_suites_give_readable_errors(tmp_path: Path, text: str, expected: str) -> None:
@@ -151,3 +163,14 @@ def test_yaml_error_mentions_line(tmp_path: Path) -> None:
 def test_missing_file(tmp_path: Path) -> None:
     with pytest.raises(SuiteError, match="cannot read file"):
         load_suite(tmp_path / "nope.yaml")
+
+
+def test_injection_suite_has_an_attack_check_in_every_case() -> None:
+    suite = load_suite(Path(__file__).parent.parent / "suites" / "prompt_injection.yaml")
+    assert len(suite.cases) >= 20
+    for case in suite.cases:
+        assert any(isinstance(c, InjectionCheck) for c in case.checks), case.id
+    canaries = [
+        c.canary for case in suite.cases for c in case.checks if isinstance(c, InjectionCheck)
+    ]
+    assert len(canaries) == len(set(canaries)), "canaries must be unique"

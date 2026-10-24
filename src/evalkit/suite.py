@@ -1,7 +1,7 @@
 # Test suites: the YAML format, its validation, and a loader with readable errors.
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import Field, ValidationError, model_validator
@@ -9,10 +9,23 @@ from pydantic import Field, ValidationError, model_validator
 from evalkit.checks import Check, ToolCallCheck
 from evalkit.models import StrictModel, ToolDef
 
+# How untrusted text (documents, tool output) is put into the prompt.
+# plain: pasted as is. delimited: wrapped in tags + a system rule to treat it as data.
+DocumentFormat = Literal["plain", "delimited"]
+
 
 class Defaults(StrictModel):
     system: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+    document_format: DocumentFormat = "plain"
+
+
+# A fake earlier tool call and its result, for attacks hidden in tool output.
+# The runner turns it into: assistant calls `name(arguments)`, tool answers `content`.
+class ToolResult(StrictModel):
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    content: str
 
 
 class Case(StrictModel):
@@ -23,6 +36,7 @@ class Case(StrictModel):
     system: str | None = None
     document: str | None = None
     tools: list[ToolDef] = Field(default_factory=list)
+    tool_result: ToolResult | None = None
     checks: list[Check] = Field(min_length=1)
 
     # Catches typos like `name: get_wether` when the case only offers `get_weather`.
@@ -32,6 +46,8 @@ class Case(StrictModel):
         for check in self.checks:
             if isinstance(check, ToolCallCheck) and check.called and check.name not in offered:
                 raise ValueError(f"tool_call check refers to unknown tool {check.name!r}")
+        if self.tool_result and self.tool_result.name not in offered:
+            raise ValueError(f"tool_result refers to unknown tool {self.tool_result.name!r}")
         return self
 
 

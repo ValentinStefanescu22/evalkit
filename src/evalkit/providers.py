@@ -72,7 +72,7 @@ class OpenAICompatibleProvider:
     ) -> Response:
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": [m.model_dump() for m in messages],
+            "messages": [_message_to_openai(m) for m in messages],
             **(params or {}),
         }
         if tools:
@@ -106,6 +106,24 @@ class OpenAICompatibleProvider:
         )
 
 
+# Plain messages stay {role, content}; tool-related fields are added only when present.
+def _message_to_openai(message: Message) -> dict[str, Any]:
+    out: dict[str, Any] = {"role": message.role, "content": message.content}
+    if message.tool_calls:
+        out["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                # The OpenAI format wants arguments as a JSON string, not an object.
+                "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
+            }
+            for call in message.tool_calls
+        ]
+    if message.tool_call_id is not None:
+        out["tool_call_id"] = message.tool_call_id
+    return out
+
+
 # OpenAI sends arguments as a JSON *string*. If the model wrote broken JSON, keep the
 # raw text so the tool_call check fails visibly instead of the whole run crashing.
 def _parse_tool_call(call: dict[str, Any]) -> ToolCall:
@@ -117,4 +135,4 @@ def _parse_tool_call(call: dict[str, Any]) -> ToolCall:
         arguments = {"_raw": raw}
     if not isinstance(arguments, dict):
         arguments = {"_raw": raw}
-    return ToolCall(name=function["name"], arguments=arguments)
+    return ToolCall(name=function["name"], arguments=arguments, id=call.get("id") or "")

@@ -33,14 +33,20 @@ class ToolDef(StrictModel):
         return ensure_json_schema(v)
 
 
-class Message(BaseModel):
-    role: Literal["system", "user", "assistant", "tool"]
-    content: str
-
-
 class ToolCall(BaseModel):
     name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
+    # Set by the server; links a tool's result back to the call that asked for it.
+    id: str = ""
+
+
+class Message(BaseModel):
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str = ""
+    # An assistant message that asks for tools carries the calls here.
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    # A tool message says which call it is the result of.
+    tool_call_id: str | None = None
 
 
 # What every provider returns, whatever model sits behind it.

@@ -8,7 +8,7 @@ from typing import Any
 
 from evalkit.models import CaseResult
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE runs (
@@ -18,6 +18,7 @@ CREATE TABLE runs (
     model       TEXT NOT NULL,
     base_url    TEXT NOT NULL,
     params      TEXT NOT NULL,              -- JSON
+    document_format TEXT NOT NULL DEFAULT 'plain',  -- 'plain' or 'delimited'
     status      TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
     error       TEXT,
     started_at  TEXT NOT NULL,              -- ISO-8601, UTC
@@ -65,24 +66,43 @@ class Store:
         self.conn.execute("PRAGMA foreign_keys = ON")
         # user_version is a free integer SQLite keeps in the file: 0 means brand new.
         version = self.conn.execute("PRAGMA user_version").fetchone()[0]
-        if version == 0:
-            with self.conn:
-                self.conn.executescript(SCHEMA)
-                self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        elif version > SCHEMA_VERSION:
+        if version > SCHEMA_VERSION:
             raise RuntimeError(f"{path} was created by a newer evalkit (schema v{version})")
+        with self.conn:
+            if version == 0:
+                self.conn.executescript(SCHEMA)
+            # Migrations: upgrade older files step by step, keeping their data.
+            if version == 1:
+                self.conn.execute(
+                    "ALTER TABLE runs ADD COLUMN document_format TEXT NOT NULL DEFAULT 'plain'"
+                )
+            self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
         self.conn.close()
 
     def start_run(
-        self, suite_name: str, suite_path: str, model: str, base_url: str, params: dict[str, Any]
+        self,
+        suite_name: str,
+        suite_path: str,
+        model: str,
+        base_url: str,
+        params: dict[str, Any],
+        document_format: str = "plain",
     ) -> int:
         with self.conn:
             cursor = self.conn.execute(
-                "INSERT INTO runs (suite_name, suite_path, model, base_url, params, status,"
-                " started_at) VALUES (?, ?, ?, ?, ?, 'running', ?)",
-                (suite_name, suite_path, model, base_url, json.dumps(params), _now()),
+                "INSERT INTO runs (suite_name, suite_path, model, base_url, params,"
+                " document_format, status, started_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)",
+                (
+                    suite_name,
+                    suite_path,
+                    model,
+                    base_url,
+                    json.dumps(params),
+                    document_format,
+                    _now(),
+                ),
             )
         assert cursor.lastrowid is not None
         return cursor.lastrowid

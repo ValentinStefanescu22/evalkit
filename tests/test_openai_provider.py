@@ -4,7 +4,7 @@ from typing import Any
 import httpx
 import pytest
 
-from evalkit.models import Message, ToolDef
+from evalkit.models import Message, ToolCall, ToolDef
 from evalkit.providers import OpenAICompatibleProvider, ProviderError
 
 # A typical successful reply in the OpenAI chat-completions format.
@@ -120,3 +120,36 @@ def test_api_key_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     assert OpenAICompatibleProvider("m").client.headers["Authorization"] == "Bearer test-key"
     monkeypatch.delenv("OPENAI_API_KEY")
     assert "Authorization" not in OpenAICompatibleProvider("m").client.headers
+
+
+def test_tool_history_sent_in_openai_format() -> None:
+    sent: list[dict[str, Any]] = []
+    call = ToolCall(id="call_1", name="search_web", arguments={"q": "weather"})
+    fake(sent=sent).complete(
+        [
+            Message(role="user", content="Weather?"),
+            Message(role="assistant", tool_calls=[call]),
+            Message(role="tool", content="Sunny.", tool_call_id="call_1"),
+        ]
+    )
+    assert sent[0]["messages"] == [
+        {"role": "user", "content": "Weather?"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "search_web", "arguments": '{"q": "weather"}'},
+                }
+            ],
+        },
+        {"role": "tool", "content": "Sunny.", "tool_call_id": "call_1"},
+    ]
+
+
+def test_tool_call_id_parsed() -> None:
+    body = tool_reply('{"city": "Bucharest"}')
+    body["choices"][0]["message"]["tool_calls"][0]["id"] = "call_abc"
+    assert ask(fake(body=body)).tool_calls[0].id == "call_abc"

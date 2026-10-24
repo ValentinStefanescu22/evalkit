@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -44,7 +45,7 @@ def test_run_prints_progress_and_summary(monkeypatch: pytest.MonkeyPatch, tmp_pa
     db = tmp_path / "evalkit.db"
     result = CliRunner().invoke(app, ["run", SUITE, "--model", "mock", "--db", str(db)])
     assert result.exit_code == 0
-    assert "run #1  basic_qa  mock  (5 cases)" in result.output
+    assert "run #1  basic_qa  mock  plain  (5 cases)" in result.output
     assert "✓ capital_romania" in result.output
     assert "✗ simple_math" in result.output
     assert "expected '144' in answer" in result.output
@@ -84,3 +85,14 @@ def test_run_provider_error_exits_2(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert result.exit_code == 2
     assert "is Ollama running?" in result.output
     assert "run #1 marked failed" in result.output
+
+
+def test_run_document_format_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    use_provider(monkeypatch, MockProvider({}))
+    db = tmp_path / "evalkit.db"
+    args = ["run", SUITE, "--model", "mock", "--db", str(db), "--document-format", "delimited"]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 0
+    assert "mock  delimited  (5 cases)" in result.output
+    saved = sqlite3.connect(db).execute("SELECT document_format FROM runs").fetchone()[0]
+    assert saved == "delimited"
