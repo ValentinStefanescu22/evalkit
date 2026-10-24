@@ -1,30 +1,30 @@
 # Test suites: the YAML format, its validation, and a loader with readable errors.
 
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
-
-# Base for every suite model: unknown fields (typos like `promt`) are errors.
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class ContainsCheck(StrictModel):
-    type: Literal["contains"]
-    value: str
-    case_sensitive: bool = False
-
-
-# Pydantic picks the right check class by looking at `type`. Milestone 3 adds more.
-Check = Annotated[ContainsCheck, Field(discriminator="type")]
+from evalkit.checks import Check, ToolCallCheck, ensure_json_schema
+from evalkit.models import StrictModel
 
 
 class Defaults(StrictModel):
     system: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+
+
+# A tool the model may call. `parameters` is a JSON schema describing its arguments.
+class ToolDef(StrictModel):
+    name: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
+    description: str = ""
+    parameters: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
+
+    @field_validator("parameters")
+    @classmethod
+    def parameters_is_schema(cls, v: dict[str, Any]) -> dict[str, Any]:
+        return ensure_json_schema(v)
 
 
 class Case(StrictModel):
@@ -34,7 +34,17 @@ class Case(StrictModel):
     prompt: str = Field(min_length=1)
     system: str | None = None
     document: str | None = None
+    tools: list[ToolDef] = Field(default_factory=list)
     checks: list[Check] = Field(min_length=1)
+
+    # Catches typos like `name: get_wether` when the case only offers `get_weather`.
+    @model_validator(mode="after")
+    def tool_checks_use_known_tools(self) -> "Case":
+        offered = {tool.name for tool in self.tools}
+        for check in self.checks:
+            if isinstance(check, ToolCallCheck) and check.called and check.name not in offered:
+                raise ValueError(f"tool_call check refers to unknown tool {check.name!r}")
+        return self
 
 
 class Suite(StrictModel):

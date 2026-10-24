@@ -1,11 +1,142 @@
-# Checks score a single Response and return a CheckResult.
+# Checks: each class holds its settings (from YAML) and grades a Response with `run`.
 
-from evalkit.models import CheckResult, Response
+import json
+import re
+from typing import Annotated, Any, Literal
+
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError, best_match
+from pydantic import Field, field_validator
+
+from evalkit.models import CheckResult, Response, StrictModel, ToolCall
 
 
-def contains(response: Response, value: str, case_sensitive: bool = False) -> CheckResult:
-    text = response.text if case_sensitive else response.text.lower()
-    needle = value if case_sensitive else value.lower()
-    passed = needle in text
-    detail = "" if passed else f"expected {value!r} in answer"
-    return CheckResult(check="contains", passed=passed, detail=detail)
+# Raises a readable error if `schema` is not itself a valid JSON schema.
+def ensure_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    try:
+        Draft202012Validator.check_schema(schema)
+    except SchemaError as e:
+        raise ValueError(f"invalid JSON schema: {e.message}") from e
+    return schema
+
+
+def _found(text: str, value: str, case_sensitive: bool) -> bool:
+    if case_sensitive:
+        return value in text
+    return value.lower() in text.lower()
+
+
+# One class for both names: `contains` passes if the text is there, `not_contains` if it isn't.
+class ContainsCheck(StrictModel):
+    type: Literal["contains", "not_contains"] = "contains"
+    value: str
+    case_sensitive: bool = False
+
+    def run(self, response: Response) -> CheckResult:
+        found = _found(response.text, self.value, self.case_sensitive)
+        if self.type == "contains":
+            detail = "" if found else f"expected {self.value!r} in answer"
+            return CheckResult(check=self.type, passed=found, detail=detail)
+        detail = f"found forbidden {self.value!r} in answer" if found else ""
+        return CheckResult(check=self.type, passed=not found, detail=detail)
+
+
+# Uses re.search: the pattern may match anywhere. For case-insensitive, start it with (?i).
+class RegexCheck(StrictModel):
+    type: Literal["regex"] = "regex"
+    pattern: str
+
+    # A broken pattern should fail when the suite loads, not halfway through a run.
+    @field_validator("pattern")
+    @classmethod
+    def pattern_compiles(cls, v: str) -> str:
+        try:
+            re.compile(v)
+        except re.error as e:
+            raise ValueError(f"invalid regex: {e}") from e
+        return v
+
+    def run(self, response: Response) -> CheckResult:
+        passed = re.search(self.pattern, response.text) is not None
+        detail = "" if passed else f"no match for pattern {self.pattern!r}"
+        return CheckResult(check=self.type, passed=passed, detail=detail)
+
+
+# Matches an answer that is entirely one ```json ... ``` (or plain ```) fenced block.
+_FENCE = re.compile(r"^```(?:json)?\s*\n(.*?)\n?```$", re.DOTALL)
+
+
+def _strip_fence(text: str) -> str:
+    text = text.strip()
+    match = _FENCE.match(text)
+    return match.group(1) if match else text
+
+
+class ValidJsonCheck(StrictModel):
+    type: Literal["valid_json"] = "valid_json"
+    # Not called `schema`: that name clashes with a built-in Pydantic method.
+    json_schema: dict[str, Any] | None = None
+
+    @field_validator("json_schema")
+    @classmethod
+    def schema_is_valid(cls, v: dict[str, Any] | None) -> dict[str, Any] | None:
+        return v if v is None else ensure_json_schema(v)
+
+    def run(self, response: Response) -> CheckResult:
+        try:
+            data = json.loads(_strip_fence(response.text))
+        except json.JSONDecodeError as e:
+            detail = f"not valid JSON: {e.msg} (line {e.lineno}, col {e.colno})"
+            return CheckResult(check=self.type, passed=False, detail=detail)
+
+        if self.json_schema is not None:
+            error = best_match(Draft202012Validator(self.json_schema).iter_errors(data))
+            if error is not None:
+                detail = f"schema: {error.json_path}: {error.message}"
+                return CheckResult(check=self.type, passed=False, detail=detail)
+
+        return CheckResult(check=self.type, passed=True)
+
+
+def _format_call(call: ToolCall) -> str:
+    return f"{call.name}({call.arguments})"
+
+
+# called=True: some call must have this name and these arguments (extra arguments are fine).
+# called=False: no call may match; with no arguments listed, the tool must not be called at all.
+class ToolCallCheck(StrictModel):
+    type: Literal["tool_call"] = "tool_call"
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    called: bool = True
+
+    def _matches(self, call: ToolCall) -> bool:
+        if call.name != self.name:
+            return False
+        return all(
+            key in call.arguments and call.arguments[key] == value
+            for key, value in self.arguments.items()
+        )
+
+    def run(self, response: Response) -> CheckResult:
+        matching = [c for c in response.tool_calls if self._matches(c)]
+        expected = f"{self.name}({self.arguments})" if self.arguments else self.name
+
+        if self.called:
+            if matching:
+                return CheckResult(check=self.type, passed=True)
+            got = ", ".join(_format_call(c) for c in response.tool_calls) or "no tool calls"
+            detail = f"expected call {expected}; got {got}"
+            return CheckResult(check=self.type, passed=False, detail=detail)
+
+        if matching:
+            detail = f"forbidden call: {_format_call(matching[0])}"
+            return CheckResult(check=self.type, passed=False, detail=detail)
+        return CheckResult(check=self.type, passed=True)
+
+
+# Pydantic reads `type` to pick the right class when loading YAML.
+Check = Annotated[
+    ContainsCheck | RegexCheck | ValidJsonCheck | ToolCallCheck,
+    Field(discriminator="type"),
+]

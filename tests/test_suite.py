@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from evalkit.suite import ContainsCheck, SuiteError, load_suite
+from evalkit.checks import (
+    ContainsCheck,
+    RegexCheck,
+    ToolCallCheck,
+    ValidJsonCheck,
+)
+from evalkit.suite import SuiteError, load_suite
 
 VALID = """
 name: demo
@@ -38,9 +44,41 @@ def test_valid_suite_loads(tmp_path: Path) -> None:
     assert case.checks == [ContainsCheck(type="contains", value="Bucharest")]
 
 
-def test_shipped_example_suite_loads() -> None:
-    suite = load_suite(Path(__file__).parent.parent / "suites" / "basic_qa.yaml")
+@pytest.mark.parametrize("name", ["basic_qa.yaml", "structured_output.yaml"])
+def test_shipped_example_suites_load(name: str) -> None:
+    suite = load_suite(Path(__file__).parent.parent / "suites" / name)
     assert len(suite.cases) >= 5
+
+
+EVERY_CHECK = """
+name: demo
+cases:
+  - id: q1
+    prompt: "Weather in Bucharest?"
+    tools:
+      - name: get_weather
+        parameters: {type: object, properties: {city: {type: string}}}
+    checks:
+      - {type: contains, value: a}
+      - {type: not_contains, value: b}
+      - {type: regex, pattern: "\\\\d+"}
+      - {type: valid_json, json_schema: {type: object}}
+      - {type: tool_call, name: get_weather, arguments: {city: Bucharest}}
+"""
+
+
+# The `type` field in YAML must pick the matching check class.
+def test_every_check_type_loads_from_yaml(tmp_path: Path) -> None:
+    case = load_suite(write(tmp_path, EVERY_CHECK)).cases[0]
+    assert [type(c) for c in case.checks] == [
+        ContainsCheck,
+        ContainsCheck,
+        RegexCheck,
+        ValidJsonCheck,
+        ToolCallCheck,
+    ]
+    assert [c.type for c in case.checks][:2] == ["contains", "not_contains"]
+    assert case.tools[0].name == "get_weather"
 
 
 ONE_CASE = """
@@ -84,6 +122,18 @@ cases:
         ("name: demo\ncases: [\n", "invalid YAML"),
         ("", "file is empty"),
         ("- just\n- a list\n", "top level must be a mapping"),
+        (
+            case(checks='[{type: regex, pattern: "(unclosed"}]'),
+            "checks[0].regex.pattern: invalid regex: missing )",
+        ),
+        (
+            case(checks="[{type: valid_json, json_schema: {type: not-a-type}}]"),
+            "invalid JSON schema",
+        ),
+        (
+            case(checks="[{type: tool_call, name: get_wether}]"),
+            "cases[0] (q1): tool_call check refers to unknown tool 'get_wether'",
+        ),
     ],
 )
 def test_bad_suites_give_readable_errors(tmp_path: Path, text: str, expected: str) -> None:

@@ -1,0 +1,83 @@
+name: structured_output
+description: Answers a program can read (JSON, fixed formats) and correct tool use.
+defaults:
+  params:
+    temperature: 0
+cases:
+  - id: person_as_json
+    tags: [json]
+    prompt: >
+      Return a JSON object with keys "name" (string) and "age" (integer) for:
+      Ana is 29 years old. Reply with JSON only.
+    checks:
+      - type: valid_json
+        json_schema:
+          type: object
+          required: [name, age]
+          properties:
+            name: {type: string}
+            age: {type: integer}
+
+  - id: cities_as_json_list
+    tags: [json]
+    prompt: >
+      List the three largest cities in Romania as a JSON array of strings.
+      Reply with JSON only.
+    checks:
+      - type: valid_json
+        json_schema:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items: {type: string}
+      - type: contains
+        value: Bucharest
+
+  - id: iso_date
+    tags: [format]
+    prompt: "Write the date 24 October 2026 in ISO 8601 format (YYYY-MM-DD). Reply with the date only."
+    checks:
+      - type: regex
+        pattern: '^\s*2026-10-24\s*$'
+
+  - id: no_refusal_for_simple_task
+    tags: [format]
+    prompt: "Convert 5 kilometres to metres. Reply with the number only."
+    checks:
+      - type: regex
+        pattern: '\b5000\b'
+      - type: not_contains
+        value: "I can't"
+
+  - id: weather_tool
+    tags: [tools]
+    prompt: "What's the weather like in Bucharest right now?"
+    tools:
+      - name: get_weather
+        description: Get the current weather for a city.
+        parameters:
+          type: object
+          required: [city]
+          properties:
+            city: {type: string}
+    checks:
+      - type: tool_call
+        name: get_weather
+        arguments: {city: Bucharest}
+
+  - id: no_tool_for_general_knowledge
+    tags: [tools]
+    prompt: "What is the capital of France?"
+    tools:
+      - name: get_weather
+        description: Get the current weather for a city.
+        parameters:
+          type: object
+          properties:
+            city: {type: string}
+    checks:
+      - type: tool_call
+        name: get_weather
+        called: false
+      - type: contains
+        value: Paris

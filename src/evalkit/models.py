@@ -2,7 +2,12 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+# Base for models built from user-written YAML: unknown fields (typos like `promt`) are errors.
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 class Message(BaseModel):
