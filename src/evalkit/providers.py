@@ -1,17 +1,27 @@
 # Model providers. Anything with a matching `complete` method is a Provider.
 
+import json
+import os
+import time
 from typing import Any, Protocol
 
-from evalkit.models import Message, Response
+import httpx
+
+from evalkit.models import Message, Response, ToolCall, ToolDef
 
 
 class Provider(Protocol):
     def complete(
         self,
         messages: list[Message],
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolDef] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Response: ...
+
+
+# Raised when the model can't be reached or refuses the request. Stops the run.
+class ProviderError(Exception):
+    pass
 
 
 # Returns scripted answers keyed by the last user message.
@@ -25,9 +35,86 @@ class MockProvider:
     def complete(
         self,
         messages: list[Message],
-        tools: list[dict[str, Any]] | None = None,
+        tools: list[ToolDef] | None = None,
         params: dict[str, Any] | None = None,
     ) -> Response:
         prompt = next((m.content for m in reversed(messages) if m.role == "user"), "")
         answer = self.script.get(prompt, self.default)
         return answer if isinstance(answer, Response) else Response(text=answer)
+
+
+OLLAMA_URL = "http://localhost:11434/v1"
+
+
+# Talks to any server that speaks the OpenAI chat-completions format:
+# Ollama (default), vLLM, LM Studio, Groq, OpenRouter, ...
+class OpenAICompatibleProvider:
+    def __init__(
+        self,
+        model: str,
+        base_url: str = OLLAMA_URL,
+        client: httpx.Client | None = None,
+    ) -> None:
+        self.model = model
+        self.base_url = base_url.rstrip("/")
+        headers = {}
+        # Ollama needs no key; hosted services do. Only ever read from the environment.
+        if api_key := os.environ.get("OPENAI_API_KEY"):
+            headers["Authorization"] = f"Bearer {api_key}"
+        # Local models can take a while on the first call, while they load into memory.
+        self.client = client or httpx.Client(timeout=120, headers=headers)
+
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[ToolDef] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Response:
+        body: dict[str, Any] = {
+            "model": self.model,
+            "messages": [m.model_dump() for m in messages],
+            **(params or {}),
+        }
+        if tools:
+            body["tools"] = [{"type": "function", "function": t.model_dump()} for t in tools]
+
+        start = time.perf_counter()
+        try:
+            reply = self.client.post(f"{self.base_url}/chat/completions", json=body)
+        except httpx.ConnectError as e:
+            raise ProviderError(
+                f"cannot reach {self.base_url} — is Ollama running? (ollama serve)"
+            ) from e
+        except httpx.TimeoutException as e:
+            raise ProviderError(f"{self.base_url} did not answer in time") from e
+        latency_ms = (time.perf_counter() - start) * 1000
+
+        if reply.status_code == 404:
+            raise ProviderError(f"model {self.model!r} not found — try: ollama pull {self.model}")
+        if reply.is_error:
+            raise ProviderError(f"HTTP {reply.status_code} from {self.base_url}: {reply.text}")
+
+        data = reply.json()
+        message = data["choices"][0]["message"]
+        usage = data.get("usage") or {}
+        return Response(
+            text=message.get("content") or "",
+            tool_calls=[_parse_tool_call(c) for c in message.get("tool_calls") or []],
+            input_tokens=usage.get("prompt_tokens", 0),
+            output_tokens=usage.get("completion_tokens", 0),
+            latency_ms=latency_ms,
+        )
+
+
+# OpenAI sends arguments as a JSON *string*. If the model wrote broken JSON, keep the
+# raw text so the tool_call check fails visibly instead of the whole run crashing.
+def _parse_tool_call(call: dict[str, Any]) -> ToolCall:
+    function = call["function"]
+    raw = function.get("arguments") or "{}"
+    try:
+        arguments = json.loads(raw) if isinstance(raw, str) else raw
+    except json.JSONDecodeError:
+        arguments = {"_raw": raw}
+    if not isinstance(arguments, dict):
+        arguments = {"_raw": raw}
+    return ToolCall(name=function["name"], arguments=arguments)

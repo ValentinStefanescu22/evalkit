@@ -5,19 +5,10 @@ import re
 from typing import Annotated, Any, Literal
 
 from jsonschema import Draft202012Validator
-from jsonschema.exceptions import SchemaError, best_match
+from jsonschema.exceptions import best_match
 from pydantic import Field, field_validator
 
-from evalkit.models import CheckResult, Response, StrictModel, ToolCall
-
-
-# Raises a readable error if `schema` is not itself a valid JSON schema.
-def ensure_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
-    try:
-        Draft202012Validator.check_schema(schema)
-    except SchemaError as e:
-        raise ValueError(f"invalid JSON schema: {e.message}") from e
-    return schema
+from evalkit.models import CheckResult, Response, StrictModel, ToolCall, ensure_json_schema
 
 
 def _found(text: str, value: str, case_sensitive: bool) -> bool:

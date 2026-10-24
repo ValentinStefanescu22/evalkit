@@ -4,27 +4,15 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, ValidationError, model_validator
 
-from evalkit.checks import Check, ToolCallCheck, ensure_json_schema
-from evalkit.models import StrictModel
+from evalkit.checks import Check, ToolCallCheck
+from evalkit.models import StrictModel, ToolDef
 
 
 class Defaults(StrictModel):
     system: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
-
-
-# A tool the model may call. `parameters` is a JSON schema describing its arguments.
-class ToolDef(StrictModel):
-    name: str = Field(pattern=r"^[a-zA-Z0-9_-]+$")
-    description: str = ""
-    parameters: dict[str, Any] = Field(default_factory=lambda: {"type": "object"})
-
-    @field_validator("parameters")
-    @classmethod
-    def parameters_is_schema(cls, v: dict[str, Any]) -> dict[str, Any]:
-        return ensure_json_schema(v)
 
 
 class Case(StrictModel):
