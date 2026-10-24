@@ -5,3 +5,6 @@ __pycache__/
 .ruff_cache/
 .env
 *.db
+DECISIONS.md
+SPEC.md
+WALKTHROUGH.md

@@ -1,0 +1,41 @@
+name: basic_qa
+description: Simple factual questions with one clearly correct answer.
+defaults:
+  system: "Answer in one short sentence."
+  params:
+    temperature: 0
+cases:
+  - id: capital_romania
+    tags: [geography]
+    prompt: "What is the capital of Romania?"
+    checks:
+      - type: contains
+        value: Bucharest
+
+  - id: longest_river_romania
+    tags: [geography]
+    prompt: "Which river forms most of Romania's southern border?"
+    checks:
+      - type: contains
+        value: Danube
+
+  - id: simple_math
+    tags: [math]
+    prompt: "What is 12 multiplied by 12? Reply with the number only."
+    checks:
+      - type: contains
+        value: "144"
+
+  - id: python_creator
+    tags: [programming]
+    prompt: "Who created the Python programming language?"
+    checks:
+      - type: contains
+        value: Guido van Rossum
+
+  - id: http_not_found
+    tags: [programming]
+    prompt: "Which HTTP status code means 'Not Found'?"
+    checks:
+      - type: contains
+        value: "404"
