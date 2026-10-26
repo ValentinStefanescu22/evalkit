@@ -74,6 +74,7 @@ def run_case(
 
 # Runs all cases in order, saving each as soon as it's graded. `on_result` lets the CLI
 # print progress live. Any error marks the run failed (keeping saved cases) and re-raises.
+# With repeats, the whole suite runs again each time, so a stopped run is still balanced.
 def run_suite(
     run_id: int,
     suite: Suite,
@@ -81,15 +82,18 @@ def run_suite(
     store: Store,
     on_result: Callable[[CaseResult], None] | None = None,
     document_format: DocumentFormat | None = None,
+    repeats: int = 1,
 ) -> list[CaseResult]:
     results = []
     try:
-        for case in suite.cases:
-            result = run_case(suite, case, provider, document_format)
-            store.save_case(run_id, result)
-            results.append(result)
-            if on_result:
-                on_result(result)
+        for repeat in range(repeats):
+            for case in suite.cases:
+                result = run_case(suite, case, provider, document_format)
+                result.repeat_index = repeat
+                store.save_case(run_id, result)
+                results.append(result)
+                if on_result:
+                    on_result(result)
     except ProviderError as e:
         store.finish_run(run_id, "failed", str(e))
         raise

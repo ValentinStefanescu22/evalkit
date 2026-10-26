@@ -5,6 +5,7 @@ __pycache__/
 .ruff_cache/
 .env
 *.db
+reports/
 DECISIONS.md
 SPEC.md
 WALKTHROUGH.md

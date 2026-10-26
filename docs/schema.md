@@ -9,7 +9,7 @@ runs 1 ──── * case_results 1 ──── * check_results
 ```
 
 A **run** is one `evalkit run` of one suite against one model. It has one **case result** per case
-(per repeat, from milestone 6), and each case result has one **check result** per check.
+per repeat (`--repeats N` gives N rows per case), and each case result has one **check result** per check.
 
 ## runs
 
@@ -20,7 +20,7 @@ A **run** is one `evalkit run` of one suite against one model. It has one **case
 | `suite_path` | TEXT | path the suite was loaded from |
 | `model` | TEXT | model name, e.g. `qwen2.5:3b` |
 | `base_url` | TEXT | server the model was called on |
-| `params` | TEXT (JSON) | model settings sent with every request, e.g. `{"temperature": 0}` |
+| `params` | TEXT (JSON) | model settings sent with every request, e.g. `{"temperature": 0}` (`--temperature` overrides it) |
 | `document_format` | TEXT | `plain` or `delimited`: how documents and tool output were shown (v2) |
 | `status` | TEXT | `running`, `completed` or `failed` |
 | `error` | TEXT | why the run failed (NULL otherwise) |
@@ -33,7 +33,7 @@ A **run** is one `evalkit run` of one suite against one model. It has one **case
 | `id` | INTEGER PK | |
 | `run_id` | INTEGER → `runs.id` | |
 | `case_id` | TEXT | `id` from the suite file |
-| `repeat_index` | INTEGER | 0 for now; numbers repeated runs of the same case (milestone 6) |
+| `repeat_index` | INTEGER | 0, 1, ... N-1 with `--repeats N`; the run's repeat count is `max(repeat_index) + 1` |
 | `tags` | TEXT (JSON list) | the case's tags |
 | `prompt` | TEXT | the case's prompt |
 | `answer` | TEXT | the model's text answer |
@@ -68,6 +68,13 @@ SELECT c.case_id, k.type, k.detail, c.answer
 FROM case_results c JOIN check_results k ON k.case_result_id = c.id
 WHERE c.run_id = 3 AND k.passed = 0;
 
+-- pass rate per case as k/N, with repeats
+SELECT case_id, sum(passed) AS k, count(*) AS n FROM case_results WHERE run_id = 7 GROUP BY case_id;
+
+-- did a case give the same answer every repeat? (1 = yes)
+SELECT case_id, count(DISTINCT answer) AS distinct_answers
+FROM case_results WHERE run_id = 7 GROUP BY case_id;
+
 -- prompt injection: attack success rate per tag, plain vs delimited
 -- (json_each splits the JSON tag list into rows)
 SELECT r.id AS run, r.document_format, t.value AS tag,
@@ -82,6 +89,9 @@ WHERE r.suite_name = 'prompt_injection'
 GROUP BY r.id, t.value
 ORDER BY t.value, r.id;
 ```
+
+Confidence intervals are not stored: `evalkit report` and `evalkit compare` compute them
+(Wilson 95%) from these rows every time, so the formula can change without a migration.
 
 ## Versions
 

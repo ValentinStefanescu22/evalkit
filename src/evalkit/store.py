@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from evalkit.models import CaseResult
+from evalkit.models import CaseResult, CheckResult, Response, ToolCall
 
 SCHEMA_VERSION = 2
 
@@ -145,3 +145,48 @@ class Store:
                 "UPDATE runs SET status = ?, error = ?, finished_at = ? WHERE id = ?",
                 (status, error, _now(), run_id),
             )
+
+    def get_run(self, run_id: int) -> sqlite3.Row | None:
+        row: sqlite3.Row | None = self.conn.execute(
+            "SELECT * FROM runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        return row
+
+    # Rebuilds the CaseResult objects the runner saved, so reports work on the same models.
+    def load_results(self, run_id: int) -> list[CaseResult]:
+        cases = self.conn.execute(
+            "SELECT * FROM case_results WHERE run_id = ? ORDER BY repeat_index, id", (run_id,)
+        ).fetchall()
+        results = []
+        for c in cases:
+            checks = self.conn.execute(
+                "SELECT * FROM check_results WHERE case_result_id = ? ORDER BY position",
+                (c["id"],),
+            ).fetchall()
+            response = Response(
+                text=c["answer"],
+                tool_calls=[ToolCall(**t) for t in json.loads(c["tool_calls"])],
+                input_tokens=c["input_tokens"],
+                output_tokens=c["output_tokens"],
+                latency_ms=c["latency_ms"],
+                cost_usd=c["cost_usd"],
+            )
+            results.append(
+                CaseResult(
+                    case_id=c["case_id"],
+                    repeat_index=c["repeat_index"],
+                    tags=json.loads(c["tags"]),
+                    prompt=c["prompt"],
+                    response=response,
+                    checks=[
+                        CheckResult(
+                            check=k["type"],
+                            passed=bool(k["passed"]),
+                            detail=k["detail"],
+                            config=json.loads(k["config"]),
+                        )
+                        for k in checks
+                    ],
+                )
+            )
+        return results

@@ -117,3 +117,22 @@ def test_document_format_saved(tmp_path: Path) -> None:
     store = Store(tmp_path / "evalkit.db")
     store.start_run("s", "p", "m", "u", {}, document_format="delimited")
     assert store.conn.execute("SELECT document_format FROM runs").fetchone()[0] == "delimited"
+
+
+def test_load_results_rebuilds_what_was_saved(tmp_path: Path) -> None:
+    store = Store(tmp_path / "evalkit.db")
+    run_id = store.start_run("s", "p", "m", "u", {})
+    saved = sample_result()
+    second = sample_result()
+    second.repeat_index = 1
+    store.save_case(run_id, saved)
+    store.save_case(run_id, second)
+    assert store.load_results(run_id) == [saved, second]
+
+
+def test_get_run(tmp_path: Path) -> None:
+    store = Store(tmp_path / "evalkit.db")
+    run_id = store.start_run("basic_qa", "p", "m", "u", {})
+    run = store.get_run(run_id)
+    assert run is not None and run["suite_name"] == "basic_qa"
+    assert store.get_run(999) is None

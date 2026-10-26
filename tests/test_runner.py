@@ -234,3 +234,18 @@ def test_rule_alone_when_no_system_prompt() -> None:
     assert build_messages(suite, suite.cases[0], "delimited")[0] == Message(
         role="system", content=UNTRUSTED_RULE
     )
+
+
+# The whole suite runs once per repeat (pass-major), each answer saved with its repeat number.
+def test_repeats_run_whole_suite_again(tmp_path: Path) -> None:
+    store = Store(tmp_path / "evalkit.db")
+    run_id = store.start_run("demo", "demo.yaml", "mock", "url", {})
+    results = run_suite(run_id, SUITE, MockProvider({}), store, repeats=3)
+
+    order = [(r.repeat_index, r.case_id) for r in results]
+    assert order[:4] == [(0, "capital"), (0, "summary"), (0, "weather"), (1, "capital")]
+    assert len(order) == 9
+    rows = store.conn.execute(
+        "SELECT repeat_index, count(*) FROM case_results GROUP BY repeat_index"
+    ).fetchall()
+    assert [tuple(r) for r in rows] == [(0, 3), (1, 3), (2, 3)]

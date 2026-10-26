@@ -49,7 +49,7 @@ def test_run_prints_progress_and_summary(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert "✓ capital_romania" in result.output
     assert "✗ simple_math" in result.output
     assert "expected '144' in answer" in result.output
-    assert "1/5 passed (20%)" in result.output
+    assert "1/5 answers passed (20%)" in result.output
     assert "saved to" in result.output and "(run #1)" in result.output
     assert db.exists()
 
@@ -96,3 +96,62 @@ def test_run_document_format_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     assert "mock  delimited  (5 cases)" in result.output
     saved = sqlite3.connect(db).execute("SELECT document_format FROM runs").fetchone()[0]
     assert saved == "delimited"
+
+
+def test_run_repeats_and_temperature(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    use_provider(monkeypatch, MockProvider({"What is the capital of Romania?": "Bucharest."}))
+    db = tmp_path / "evalkit.db"
+    args = ["run", SUITE, "--model", "mock", "--db", str(db), "--repeats", "2"]
+    result = CliRunner().invoke(app, [*args, "--temperature", "0.7"])
+    assert result.exit_code == 0
+    assert "(5 cases x 2 repeats)" in result.output
+    assert "✓ capital_romania #2" in result.output
+    assert "2/10 answers passed (20%)" in result.output
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT params FROM runs").fetchone()[0] == '{"temperature": 0.7}'
+    assert conn.execute("SELECT count(*) FROM case_results").fetchone()[0] == 10
+
+
+def test_run_rejects_zero_repeats() -> None:
+    result = CliRunner().invoke(app, ["run", SUITE, "--model", "mock", "--repeats", "0"])
+    assert result.exit_code == 2  # Typer's own "invalid value" code
+    assert "Invalid value" in result.output
+
+
+# Two runs of basic_qa in one DB: run 1 answers nothing right, run 2 gets Romania right.
+def two_runs(monkeypatch: pytest.MonkeyPatch, db: Path) -> None:
+    base = ["run", SUITE, "--model", "mock", "--db", str(db), "--repeats", "5"]
+    use_provider(monkeypatch, MockProvider({}))
+    CliRunner().invoke(app, base)
+    use_provider(monkeypatch, MockProvider({"What is the capital of Romania?": "Bucharest."}))
+    CliRunner().invoke(app, base)
+
+
+def test_report_writes_markdown_and_html(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    db = tmp_path / "evalkit.db"
+    two_runs(monkeypatch, db)
+    out = tmp_path / "reports"
+    result = CliRunner().invoke(app, ["report", "2", "--db", str(db), "--out", str(out)])
+    assert result.exit_code == 0
+    md = (out / "run-2.md").read_text()
+    assert md.startswith("# Run #2: basic_qa on mock")
+    assert "| all answers | 5/25 | 20% |" in md
+    assert (out / "run-2.html").read_text().startswith("<!doctype html>")
+
+
+def test_compare_prints_significance(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    db = tmp_path / "evalkit.db"
+    two_runs(monkeypatch, db)
+    result = CliRunner().invoke(app, ["compare", "1", "2", "--db", str(db)])
+    assert result.exit_code == 0
+    # capital_romania went 0/5 -> 5/5: the intervals don't overlap.
+    assert "cases: 1 significant, 0 noise, 4 unchanged" in result.output
+    assert "capital_romania" in result.output
+
+
+def test_unknown_run_exits_1(tmp_path: Path) -> None:
+    db = tmp_path / "evalkit.db"
+    for args in (["report", "7"], ["compare", "7", "8"]):
+        result = CliRunner().invoke(app, [*args, "--db", str(db)])
+        assert result.exit_code == 1
+        assert f"no run #7 in {db}" in result.output
