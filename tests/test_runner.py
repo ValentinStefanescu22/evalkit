@@ -5,9 +5,9 @@ import pytest
 
 from evalkit.models import Message, Response, ToolCall, ToolDef
 from evalkit.providers import MockProvider, ProviderError
-from evalkit.runner import UNTRUSTED_RULE, build_messages, run_suite
+from evalkit.runner import UNTRUSTED_RULE, build_messages, mock_script, run_suite
 from evalkit.store import Store
-from evalkit.suite import Suite
+from evalkit.suite import Suite, SuiteError
 
 SUITE = Suite.model_validate(
     {
@@ -249,3 +249,18 @@ def test_repeats_run_whole_suite_again(tmp_path: Path) -> None:
         "SELECT repeat_index, count(*) FROM case_results GROUP BY repeat_index"
     ).fetchall()
     assert [tuple(r) for r in rows] == [(0, 3), (1, 3), (2, 3)]
+
+
+# Answers keyed by case id become MockProvider's script, keyed by the exact user message.
+def test_mock_script_keys_by_the_message_sent() -> None:
+    answer = Response(tool_calls=[ToolCall(name="get_weather")])
+    script = mock_script(SUITE, {"summary": "It grew 5%.", "weather": answer}, "delimited")
+    assert script == {
+        "Summarise this.\n\n<document>\nSales grew 5%.\n</document>": "It grew 5%.",
+        "Weather in Bucharest?": answer,
+    }
+
+
+def test_mock_script_rejects_unknown_case_ids() -> None:
+    with pytest.raises(SuiteError, match="not in demo: capitl"):
+        mock_script(SUITE, {"capitl": "Bucharest"})

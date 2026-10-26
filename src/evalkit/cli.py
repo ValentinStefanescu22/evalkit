@@ -6,16 +6,33 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic import ValidationError
 
 from evalkit import __version__
+from evalkit.baseline import (
+    Baseline,
+    below_baseline,
+    default_path,
+    load_baseline,
+    make_baseline,
+    save_baseline,
+)
 from evalkit.models import CaseResult
-from evalkit.providers import OLLAMA_URL, OpenAICompatibleProvider, Provider, ProviderError
-from evalkit.report import build_report, compare_runs, to_html, to_markdown
-from evalkit.runner import run_suite
+from evalkit.providers import (
+    OLLAMA_URL,
+    MockProvider,
+    OpenAICompatibleProvider,
+    Provider,
+    ProviderError,
+)
+from evalkit.report import build_report, compare_runs, format_rate, to_html, to_markdown
+from evalkit.runner import mock_script, run_suite
 from evalkit.store import Store
-from evalkit.suite import DocumentFormat, Suite, SuiteError, load_suite
+from evalkit.suite import DocumentFormat, Suite, SuiteError, load_answers, load_suite
 
 app = typer.Typer(help="LLM evaluation and prompt-injection test harness.")
+baseline_app = typer.Typer(help="Save a known-good run to compare new runs against.")
+app.add_typer(baseline_app, name="baseline")
 
 
 @app.command(help="Print the evalkit version.")
@@ -37,9 +54,31 @@ def validate(suite_path: Path) -> None:
     typer.echo(f"OK: {suite.name} ({len(suite.cases)} cases)")
 
 
-# Picks the provider for a model name. Milestone 10 adds `anthropic:...` here.
-def make_provider(model: str, base_url: str) -> Provider:
+# Picks the provider for a model name. `mock:FILE` = scripted answers from FILE (used in CI).
+# Milestone 10 adds `anthropic:...` here. Raises SuiteError for a bad answers file.
+def make_provider(
+    model: str, base_url: str, suite: Suite, document_format: DocumentFormat
+) -> Provider:
+    if model.startswith("mock:"):
+        answers = load_answers(model.removeprefix("mock:"))
+        return MockProvider(mock_script(suite, answers, document_format))
     return OpenAICompatibleProvider(model, base_url=base_url)
+
+
+# Reads the baseline file for `run --fail-below-baseline`, or exits 1 with a clear message.
+def _load_baseline_or_exit(path: Path, suite_name: str) -> Baseline:
+    try:
+        baseline = load_baseline(path)
+    except OSError as e:
+        typer.echo(f"no baseline at {path}; set one with: evalkit baseline set RUN_ID", err=True)
+        raise typer.Exit(code=1) from e
+    except ValidationError as e:
+        typer.echo(f"{path} is not a valid baseline file:\n{e}", err=True)
+        raise typer.Exit(code=1) from e
+    if baseline.suite != suite_name:
+        typer.echo(f"{path} is a baseline for {baseline.suite}, not {suite_name}", err=True)
+        raise typer.Exit(code=1)
+    return baseline
 
 
 @app.command(help="Run a suite against a model and save the results.")
@@ -56,13 +95,30 @@ def run(
     temperature: Annotated[
         float | None, typer.Option(help="Override the suite's temperature [default: suite's]")
     ] = None,
+    fail_below_baseline: Annotated[
+        bool, typer.Option(help="Exit with code 3 if the pass rate drops significantly")
+    ] = False,
+    baseline: Annotated[
+        Path | None, typer.Option(help="Baseline file [default: baselines/<suite>.json]")
+    ] = None,
 ) -> None:
     suite = _load_or_exit(suite_path)
     if temperature is not None:
         # Changed before the run starts, so it is saved in runs.params like any other setting.
         suite.defaults.params["temperature"] = temperature
     fmt = document_format or suite.defaults.document_format
-    provider = make_provider(model, base_url)
+    try:
+        provider = make_provider(model, base_url, suite, fmt)
+    except SuiteError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1) from e
+
+    # Checked before the run, so a missing baseline doesn't waste a long run.
+    expected = None
+    if fail_below_baseline:
+        expected = _load_baseline_or_exit(baseline or default_path(suite.name), suite.name)
+        if expected.model != model:
+            typer.echo(f"warning: baseline was {expected.model}, this run is {model}", err=True)
     width = max(len(c.id) for c in suite.cases)
 
     def show(result: CaseResult) -> None:
@@ -95,6 +151,16 @@ def run(
         f"{passed}/{len(results)} answers passed ({passed / len(results):.0%})   avg {avg:.1f}s"
         f"   {tokens} tokens   saved to {db} (run #{run_id})"
     )
+
+    if expected:
+        dropped = below_baseline(expected, passed, len(results))
+        typer.echo(
+            f"baseline run #{expected.run_id}: {format_rate(expected.passed, expected.total)}"
+            f"   now: {format_rate(passed, len(results))}"
+            f"   {'significant drop' if dropped else 'no significant drop'}"
+        )
+        if dropped:
+            raise typer.Exit(code=3)
 
 
 # Reads a run and its answers, or exits 1 with a clear message.
@@ -138,3 +204,25 @@ def compare(
         a, results_a = _load_run_or_exit(store, run_a, db)
         b, results_b = _load_run_or_exit(store, run_b, db)
     typer.echo(compare_runs(a, b, results_a, results_b))
+
+
+@baseline_app.command("set", help="Save a completed run as the baseline for its suite.")
+def set_baseline(
+    run_id: int,
+    db: Annotated[Path, typer.Option(help="SQLite file with results")] = Path("evalkit.db"),
+    baseline: Annotated[
+        Path | None, typer.Option(help="Where to write it [default: baselines/<suite>.json]")
+    ] = None,
+) -> None:
+    with closing(Store(db)) as store:
+        run, results = _load_run_or_exit(store, run_id, db)
+    if run["status"] != "completed":
+        typer.echo(
+            f"run #{run_id} is {run['status']}; only completed runs can be a baseline", err=True
+        )
+        raise typer.Exit(code=1)
+    new = make_baseline(run, results)
+    path = baseline or default_path(new.suite)
+    save_baseline(path, new)
+    typer.echo(f"baseline for {new.suite}: {format_rate(new.passed, new.total)} (run #{run_id})")
+    typer.echo(f"saved to {path}")

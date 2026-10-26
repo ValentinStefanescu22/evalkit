@@ -1,0 +1,12 @@
+{
+  "suite": "basic_qa",
+  "run_id": 1,
+  "model": "qwen2.5:3b",
+  "document_format": "plain",
+  "params": {
+    "temperature": 0
+  },
+  "passed": 5,
+  "total": 5,
+  "set_at": "2026-10-26T13:01:44+00:00"
+}

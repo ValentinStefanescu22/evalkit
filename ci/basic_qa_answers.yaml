@@ -1,0 +1,7 @@
+# Scripted answers for `--model mock:ci/basic_qa_answers.yaml`, keyed by case id.
+# CI runs suites/basic_qa.yaml with these and checks the result against ci/basic_qa_baseline.json.
+capital_romania: "Bucharest is the capital of Romania."
+longest_river_romania: "The Danube forms most of Romania's southern border."
+simple_math: "144"
+python_creator: "Guido van Rossum created Python."
+http_not_found: "404 means Not Found."

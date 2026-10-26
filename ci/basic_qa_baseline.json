@@ -1,0 +1,12 @@
+{
+  "suite": "basic_qa",
+  "run_id": 1,
+  "model": "mock:ci/basic_qa_answers.yaml",
+  "document_format": "plain",
+  "params": {
+    "temperature": 0
+  },
+  "passed": 5,
+  "total": 5,
+  "set_at": "2026-10-26T13:00:45+00:00"
+}

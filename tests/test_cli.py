@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,7 @@ SUITE = "suites/basic_qa.yaml"
 # `monkeypatch` is a pytest fixture that temporarily replaces something and undoes it
 # after the test. Here it swaps the real provider for a scripted one: no Ollama needed.
 def use_provider(monkeypatch: pytest.MonkeyPatch, provider: Provider) -> None:
-    monkeypatch.setattr(cli, "make_provider", lambda model, base_url: provider)
+    monkeypatch.setattr(cli, "make_provider", lambda model, base_url, suite, fmt: provider)
 
 
 def test_run_prints_progress_and_summary(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -155,3 +156,139 @@ def test_unknown_run_exits_1(tmp_path: Path) -> None:
         result = CliRunner().invoke(app, [*args, "--db", str(db)])
         assert result.exit_code == 1
         assert f"no run #7 in {db}" in result.output
+
+
+CI_ARGS = [
+    "run",
+    SUITE,
+    "--model",
+    "mock:ci/basic_qa_answers.yaml",
+    "--fail-below-baseline",
+    "--baseline",
+    "ci/basic_qa_baseline.json",
+]
+
+
+# The exact command CI runs, against the committed files: must pass, so CI can't drift.
+def test_ci_command_passes(tmp_path: Path) -> None:
+    result = CliRunner().invoke(app, [*CI_ARGS, "--db", str(tmp_path / "ci.db")])
+    assert result.exit_code == 0, result.output
+    assert "5/5 answers passed" in result.output
+    assert "no significant drop" in result.output
+
+
+def write_answers(tmp_path: Path, correct: int) -> str:
+    right = ["Bucharest", "Danube", "144", "Guido van Rossum", "404"]
+    ids = ["capital_romania", "longest_river_romania", "simple_math", "python_creator"]
+    ids.append("http_not_found")
+    lines = [f'{i}: "{right[n] if n < correct else "no idea"}"' for n, i in enumerate(ids)]
+    path = tmp_path / f"answers_{correct}.yaml"
+    path.write_text("\n".join(lines) + "\n")
+    return f"mock:{path}"
+
+
+def gate(tmp_path: Path, correct: int) -> Any:
+    args = [
+        "run",
+        SUITE,
+        "--model",
+        write_answers(tmp_path, correct),
+        "--db",
+        str(tmp_path / "x.db"),
+    ]
+    args += ["--fail-below-baseline", "--baseline", "ci/basic_qa_baseline.json"]
+    return CliRunner().invoke(app, args)
+
+
+def test_gate_fails_on_significant_drop(tmp_path: Path) -> None:
+    result = gate(tmp_path, correct=0)
+    assert result.exit_code == 3
+    assert "now: 0/5  0% [0%–43%]   significant drop" in result.output
+    assert "warning: baseline was mock:ci/basic_qa_answers.yaml" in result.output
+
+
+# 1/5 = [4%–62%] still overlaps the 5/5 baseline [57%–100%]: noise, not a regression.
+def test_gate_ignores_noise(tmp_path: Path) -> None:
+    result = gate(tmp_path, correct=1)
+    assert result.exit_code == 0
+    assert "no significant drop" in result.output
+
+
+def test_gate_needs_a_baseline(tmp_path: Path) -> None:
+    missing = tmp_path / "none.json"
+    args = [*CI_ARGS[:4], "--db", str(tmp_path / "x.db"), "--fail-below-baseline"]
+    result = CliRunner().invoke(app, [*args, "--baseline", str(missing)])
+    assert result.exit_code == 1
+    assert "set one with: evalkit baseline set RUN_ID" in result.output
+    # Checked before the run starts: nothing was run or saved.
+    assert "run #" not in result.output
+
+
+def test_gate_rejects_baseline_of_another_suite(tmp_path: Path) -> None:
+    wrong = tmp_path / "b.json"
+    wrong.write_text(Path("ci/basic_qa_baseline.json").read_text().replace("basic_qa", "other"))
+    args = [
+        "run",
+        SUITE,
+        "--model",
+        "mock:ci/basic_qa_answers.yaml",
+        "--db",
+        str(tmp_path / "x.db"),
+    ]
+    result = CliRunner().invoke(app, [*args, "--fail-below-baseline", "--baseline", str(wrong)])
+    assert result.exit_code == 1
+    assert "is a baseline for other, not basic_qa" in result.output
+
+
+def test_bad_answers_file_exits_1(tmp_path: Path) -> None:
+    bad = tmp_path / "a.yaml"
+    bad.write_text("capitl_romania: Bucharest\n")
+    result = CliRunner().invoke(app, ["run", SUITE, "--model", f"mock:{bad}"])
+    assert result.exit_code == 1
+    assert "not in basic_qa: capitl_romania" in result.output
+
+
+def test_baseline_set_writes_json(tmp_path: Path) -> None:
+    db = tmp_path / "evalkit.db"
+    CliRunner().invoke(app, ["run", SUITE, "--model", write_answers(tmp_path, 4), "--db", str(db)])
+    path = tmp_path / "b.json"
+    result = CliRunner().invoke(
+        app, ["baseline", "set", "1", "--db", str(db), "--baseline", str(path)]
+    )
+    assert result.exit_code == 0
+    assert "baseline for basic_qa: 4/5  80% [38%–96%] (run #1)" in result.output
+    saved = json.loads(path.read_text())
+    assert (saved["suite"], saved["run_id"], saved["passed"], saved["total"]) == (
+        "basic_qa",
+        1,
+        4,
+        5,
+    )
+
+
+# Answers the first case, then the "server" dies: a failed run that still has saved answers.
+class DiesAfterOneProvider(MockProvider):
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[ToolDef] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Response:
+        if self.default == "dead":
+            raise ProviderError("server went away")
+        self.default = "dead"
+        return Response(text="Bucharest.")
+
+
+def test_baseline_set_refuses_failed_or_unknown_runs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    db = tmp_path / "evalkit.db"
+    use_provider(monkeypatch, DiesAfterOneProvider({}))
+    assert CliRunner().invoke(app, ["run", SUITE, "--model", "x", "--db", str(db)]).exit_code == 2
+    args = ["--db", str(db), "--baseline", str(tmp_path / "b.json")]
+    failed = CliRunner().invoke(app, ["baseline", "set", "1", *args])
+    assert failed.exit_code == 1
+    assert "run #1 is failed; only completed runs can be a baseline" in failed.output
+    assert CliRunner().invoke(app, ["baseline", "set", "9", *args]).exit_code == 1
+    assert not (tmp_path / "b.json").exists()

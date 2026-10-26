@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import Field, ValidationError, model_validator
+from pydantic import Field, TypeAdapter, ValidationError, model_validator
 
 from evalkit.checks import Check, ToolCallCheck
-from evalkit.models import StrictModel, ToolDef
+from evalkit.models import Response, StrictModel, ToolCall, ToolDef
 
 # How untrusted text (documents, tool output) is put into the prompt.
 # plain: pasted as is. delimited: wrapped in tags + a system rule to treat it as data.
@@ -74,8 +74,8 @@ class SuiteError(Exception):
     pass
 
 
-def load_suite(path: str | Path) -> Suite:
-    path = Path(path)
+# The first gates shared by every YAML file we read: readable, valid YAML, a mapping.
+def _read_yaml_mapping(path: Path, what: str) -> dict[str, Any]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
@@ -89,8 +89,13 @@ def load_suite(path: str | Path) -> Suite:
     if data is None:
         raise SuiteError(f"{path}: file is empty")
     if not isinstance(data, dict):
-        raise SuiteError(f"{path}: top level must be a mapping with `name` and `cases`")
+        raise SuiteError(f"{path}: top level must be a mapping with {what}")
+    return data
 
+
+def load_suite(path: str | Path) -> Suite:
+    path = Path(path)
+    data = _read_yaml_mapping(path, "`name` and `cases`")
     try:
         return Suite.model_validate(data)
     except ValidationError as e:
@@ -114,3 +119,28 @@ def _format_error(err: Any, data: dict[str, Any]) -> str:
     where = ".".join(parts) or "suite"
     message = err["msg"].removeprefix("Value error, ")
     return f"  - {where}: {message}"
+
+
+# One scripted answer in a mock answers file: text, tool calls, or both.
+class MockAnswer(StrictModel):
+    text: str = ""
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+
+
+# TypeAdapter validates any type, not just a model: here "a dict of case id -> answer".
+_ANSWERS = TypeAdapter(dict[str, str | MockAnswer])
+
+
+# Reads a mock answers file ({case_id: answer}) for `--model mock:FILE`.
+def load_answers(path: str | Path) -> dict[str, str | Response]:
+    path = Path(path)
+    data = _read_yaml_mapping(path, "case ids as keys")
+    try:
+        answers = _ANSWERS.validate_python(data)
+    except ValidationError as e:
+        lines = [f"  - {'.'.join(str(k) for k in err['loc'])}: {err['msg']}" for err in e.errors()]
+        raise SuiteError(f"{path}: {len(lines)} problem(s)\n" + "\n".join(lines)) from e
+    return {
+        case_id: a if isinstance(a, str) else Response(text=a.text, tool_calls=a.tool_calls)
+        for case_id, a in answers.items()
+    }

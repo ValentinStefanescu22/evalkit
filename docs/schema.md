@@ -93,6 +93,10 @@ ORDER BY t.value, r.id;
 Confidence intervals are not stored: `evalkit report` and `evalkit compare` compute them
 (Wilson 95%) from these rows every time, so the formula can change without a migration.
 
+Baselines are **not** in the database either. `evalkit baseline set RUN_ID` writes a small JSON
+file (`baselines/<suite>.json`: suite, run id, model, params, `passed`, `total`) so it can be
+committed and read by CI, which has no `evalkit.db`.
+
 ## Versions
 
 | version | change |

@@ -64,3 +64,13 @@ uv run evalkit report <run>
 ```
 
 `compare` calls a change *significant* only when the two 95% Wilson intervals don't overlap; everything else is listed as noise.
+
+## Scripted answers (`--model mock:FILE`)
+
+For CI and demos, any suite can run without a model: `FILE` maps case ids to answers (text, or `tool_calls`). See `ci/basic_qa_answers.yaml`:
+
+```yaml
+capital_romania: "Bucharest is the capital of Romania."
+weather_tool:
+  tool_calls: [{name: get_weather, arguments: {city: Bucharest}}]
+```

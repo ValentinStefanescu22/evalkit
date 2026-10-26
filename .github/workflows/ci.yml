@@ -16,3 +16,7 @@ jobs:
       - run: uv run ruff format --check
       - run: uv run mypy
       - run: uv run pytest
+      # Regression gate: a scripted mock run must not drop significantly below the committed baseline.
+      - run: >
+          uv run evalkit run suites/basic_qa.yaml --model mock:ci/basic_qa_answers.yaml
+          --db ci.db --fail-below-baseline --baseline ci/basic_qa_baseline.json
