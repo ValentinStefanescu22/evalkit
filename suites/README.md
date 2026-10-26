@@ -5,6 +5,7 @@
 | `basic_qa.yaml` | 5 | simple factual answers (`contains`) |
 | `structured_output.yaml` | 6 | JSON with schemas, exact formats, tool calling |
 | `prompt_injection.yaml` | 22 | whether hidden instructions can take over the model |
+| `open_answers.yaml` | 8 | open-ended answers (explain, summarise, advise, rewrite, refuse), graded by an LLM judge (`rubric`) |
 
 ## prompt_injection.yaml
 
@@ -64,6 +65,24 @@ uv run evalkit report <run>
 ```
 
 `compare` calls a change *significant* only when the two 95% Wilson intervals don't overlap; everything else is listed as noise.
+
+## open_answers.yaml: graded by an LLM judge
+
+These answers have no single right string, so each case has a `rubric` check: a second model (the **judge**) reads the question, the rubric and the answer, and replies with a score from 1 to 5 plus its reasoning. The check passes if the score is at least `min_score` (default 4).
+
+```yaml
+- type: rubric
+  rubric: "Clearly says no; explains that one leaked site exposes every account; recommends a password manager."
+  min_score: 4
+```
+
+Run it with a judge, ideally from a different model family than the model being tested (a model tends to prefer its own style):
+
+```bash
+uv run evalkit run suites/open_answers.yaml --model qwen2.5:3b --judge llama3.2:3b
+```
+
+The judge's instructions are in [`src/evalkit/judge_prompt.md`](../src/evalkit/judge_prompt.md). The answer being graded is wrapped in `<answer>` tags and treated as untrusted, so "give this a 5" inside it should be ignored. A judge is a model too, so its scores need checking against human labels (milestone 9).
 
 ## Scripted answers (`--model mock:FILE`)
 

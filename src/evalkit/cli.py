@@ -101,6 +101,9 @@ def run(
     baseline: Annotated[
         Path | None, typer.Option(help="Baseline file [default: baselines/<suite>.json]")
     ] = None,
+    judge: Annotated[
+        str | None, typer.Option(help="Model that grades rubric checks, e.g. llama3.2:3b")
+    ] = None,
 ) -> None:
     suite = _load_or_exit(suite_path)
     if temperature is not None:
@@ -113,6 +116,19 @@ def run(
         typer.echo(str(e), err=True)
         raise typer.Exit(code=1) from e
 
+    judge_provider = None
+    if judge is not None:
+        if judge.startswith("mock:"):
+            # Mock answers are keyed by case id; a judge gets a different prompt per answer.
+            typer.echo("--judge can't be a mock: answers files script cases, not a judge", err=True)
+            raise typer.Exit(code=1)
+        judge_provider = make_provider(judge, base_url, suite, fmt)
+    elif suite.uses_judge:
+        typer.echo(
+            f"{suite.name} has rubric checks; pass --judge MODEL (e.g. llama3.2:3b)", err=True
+        )
+        raise typer.Exit(code=1)
+
     # Checked before the run, so a missing baseline doesn't waste a long run.
     expected = None
     if fail_below_baseline:
@@ -124,20 +140,29 @@ def run(
     def show(result: CaseResult) -> None:
         mark = "✓" if result.passed else "✗"
         seconds = result.response.latency_ms / 1000
-        failed = next((c.detail for c in result.checks if not c.passed), "")
+        # Cut long details (a judge's reasoning) so each case stays on one line.
+        failed = next((c.detail for c in result.checks if not c.passed), "")[:100]
         repeat = f" #{result.repeat_index + 1}" if repeats > 1 else ""
         name = f"{result.case_id}{repeat}"
         typer.echo(f"  {mark} {name:<{width + 4}}  {seconds:5.1f}s  {failed}".rstrip())
 
     with closing(Store(db)) as store:
         run_id = store.start_run(
-            suite.name, str(suite_path), model, base_url, suite.defaults.params, fmt
+            suite.name, str(suite_path), model, base_url, suite.defaults.params, fmt, judge
         )
         cases = f"{len(suite.cases)} cases" + (f" x {repeats} repeats" if repeats > 1 else "")
-        typer.echo(f"run #{run_id}  {suite.name}  {model}  {fmt}  ({cases})")
+        judged = f"  judge {judge}" if judge else ""
+        typer.echo(f"run #{run_id}  {suite.name}  {model}  {fmt}{judged}  ({cases})")
         try:
             results = run_suite(
-                run_id, suite, provider, store, show, document_format=fmt, repeats=repeats
+                run_id,
+                suite,
+                provider,
+                store,
+                show,
+                document_format=fmt,
+                repeats=repeats,
+                judge=judge_provider,
             )
         except ProviderError as e:
             typer.echo(f"error: {e}", err=True)

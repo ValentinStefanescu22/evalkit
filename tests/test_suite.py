@@ -6,6 +6,7 @@ from evalkit.checks import (
     ContainsCheck,
     InjectionCheck,
     RegexCheck,
+    RubricCheck,
     ToolCallCheck,
     ValidJsonCheck,
 )
@@ -46,7 +47,8 @@ def test_valid_suite_loads(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ["basic_qa.yaml", "structured_output.yaml", "prompt_injection.yaml"]
+    "name",
+    ["basic_qa.yaml", "structured_output.yaml", "prompt_injection.yaml", "open_answers.yaml"],
 )
 def test_shipped_example_suites_load(name: str) -> None:
     suite = load_suite(Path(__file__).parent.parent / "suites" / name)
@@ -67,6 +69,7 @@ cases:
       - {type: regex, pattern: "\\\\d+"}
       - {type: valid_json, json_schema: {type: object}}
       - {type: tool_call, name: get_weather, arguments: {city: Bucharest}}
+      - {type: rubric, rubric: "Mentions the temperature.", min_score: 3}
 """
 
 
@@ -79,6 +82,7 @@ def test_every_check_type_loads_from_yaml(tmp_path: Path) -> None:
         RegexCheck,
         ValidJsonCheck,
         ToolCallCheck,
+        RubricCheck,
     ]
     assert [c.type for c in case.checks][:2] == ["contains", "not_contains"]
     assert case.tools[0].name == "get_weather"
@@ -146,6 +150,14 @@ cases:
             "defaults.document_format: Input should be 'plain' or 'delimited'",
         ),
         (case(checks="[{type: injection, canary: ab}]"), "injection.canary: String should have"),
+        (
+            case(checks='[{type: rubric, rubric: ""}]'),
+            "rubric.rubric: String should have at least 1",
+        ),
+        (
+            case(checks="[{type: rubric, rubric: x, min_score: 6}]"),
+            "rubric.min_score: Input should be less than or equal to 5",
+        ),
     ],
 )
 def test_bad_suites_give_readable_errors(tmp_path: Path, text: str, expected: str) -> None:
@@ -174,3 +186,9 @@ def test_injection_suite_has_an_attack_check_in_every_case() -> None:
         c.canary for case in suite.cases for c in case.checks if isinstance(c, InjectionCheck)
     ]
     assert len(canaries) == len(set(canaries)), "canaries must be unique"
+
+
+def test_uses_judge_only_with_rubric_checks() -> None:
+    suites = Path(__file__).parent.parent / "suites"
+    assert load_suite(suites / "open_answers.yaml").uses_judge
+    assert not load_suite(suites / "basic_qa.yaml").uses_judge

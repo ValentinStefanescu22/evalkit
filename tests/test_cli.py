@@ -292,3 +292,32 @@ def test_baseline_set_refuses_failed_or_unknown_runs(
     assert "run #1 is failed; only completed runs can be a baseline" in failed.output
     assert CliRunner().invoke(app, ["baseline", "set", "9", *args]).exit_code == 1
     assert not (tmp_path / "b.json").exists()
+
+
+OPEN = "suites/open_answers.yaml"
+
+
+def test_run_with_judge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # The same mock answers as model and judge: every reply is a valid verdict.
+    use_provider(monkeypatch, MockProvider({}, default='{"reasoning": "Fine.", "score": 5}'))
+    db = tmp_path / "evalkit.db"
+    result = CliRunner().invoke(app, ["run", OPEN, "--model", "m", "--judge", "j", "--db", str(db)])
+    assert result.exit_code == 0, result.output
+    assert "run #1  open_answers  m  plain  judge j  (8 cases)" in result.output
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT judge FROM runs").fetchone()[0] == "j"
+    scores = conn.execute("SELECT DISTINCT score FROM check_results WHERE type = 'rubric'")
+    assert scores.fetchall() == [(5,)]
+
+
+def test_rubric_suite_needs_a_judge(tmp_path: Path) -> None:
+    result = CliRunner().invoke(app, ["run", OPEN, "--model", "m", "--db", str(tmp_path / "x.db")])
+    assert result.exit_code == 1
+    assert "open_answers has rubric checks; pass --judge MODEL" in result.output
+
+
+def test_judge_cannot_be_a_mock(tmp_path: Path) -> None:
+    args = ["run", OPEN, "--model", "m", "--judge", "mock:x.yaml", "--db", str(tmp_path / "x.db")]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 1
+    assert "--judge can't be a mock" in result.output

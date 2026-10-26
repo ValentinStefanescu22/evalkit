@@ -57,7 +57,7 @@ class RegexCheck(StrictModel):
 _FENCE = re.compile(r"^```(?:json)?\s*\n(.*?)\n?```$", re.DOTALL)
 
 
-def _strip_fence(text: str) -> str:
+def strip_fence(text: str) -> str:
     text = text.strip()
     match = _FENCE.match(text)
     return match.group(1) if match else text
@@ -75,7 +75,7 @@ class ValidJsonCheck(StrictModel):
 
     def run(self, response: Response) -> CheckResult:
         try:
-            data = json.loads(_strip_fence(response.text))
+            data = json.loads(strip_fence(response.text))
         except json.JSONDecodeError as e:
             detail = f"not valid JSON: {e.msg} (line {e.lineno}, col {e.colno})"
             return CheckResult(check=self.type, passed=False, detail=detail)
@@ -148,8 +148,17 @@ class InjectionCheck(StrictModel):
         return CheckResult(check=self.type, passed=not reasons, detail=detail)
 
 
+# An LLM judge scores the answer 1-5 against `rubric`; it passes if the score >= min_score.
+# The only check graded outside this file: it needs another model call, so the runner hands it
+# to judge.grade instead of calling run().
+class RubricCheck(StrictModel):
+    type: Literal["rubric"] = "rubric"
+    rubric: str = Field(min_length=1)
+    min_score: int = Field(default=4, ge=1, le=5)
+
+
 # Pydantic reads `type` to pick the right class when loading YAML.
 Check = Annotated[
-    ContainsCheck | RegexCheck | ValidJsonCheck | ToolCallCheck | InjectionCheck,
+    ContainsCheck | RegexCheck | ValidJsonCheck | ToolCallCheck | InjectionCheck | RubricCheck,
     Field(discriminator="type"),
 ]

@@ -8,7 +8,7 @@ from typing import Any
 
 from evalkit.models import CaseResult, CheckResult, Response, ToolCall
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE runs (
@@ -19,6 +19,7 @@ CREATE TABLE runs (
     base_url    TEXT NOT NULL,
     params      TEXT NOT NULL,              -- JSON
     document_format TEXT NOT NULL DEFAULT 'plain',  -- 'plain' or 'delimited'
+    judge       TEXT,                       -- model that graded rubric checks (v3)
     status      TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
     error       TEXT,
     started_at  TEXT NOT NULL,              -- ISO-8601, UTC
@@ -49,7 +50,8 @@ CREATE TABLE check_results (
     type           TEXT NOT NULL,
     passed         INTEGER NOT NULL CHECK (passed IN (0, 1)),
     detail         TEXT NOT NULL,
-    config         TEXT NOT NULL            -- JSON: the check's settings
+    config         TEXT NOT NULL,           -- JSON: the check's settings
+    score          INTEGER                  -- judge's 1-5 score, rubric checks only (v3)
 );
 """
 
@@ -71,11 +73,14 @@ class Store:
         with self.conn:
             if version == 0:
                 self.conn.executescript(SCHEMA)
-            # Migrations: upgrade older files step by step, keeping their data.
-            if version == 1:
+            # Migrations: upgrade older files one version at a time, keeping their data.
+            if version == 1:  # v1 -> v2
                 self.conn.execute(
                     "ALTER TABLE runs ADD COLUMN document_format TEXT NOT NULL DEFAULT 'plain'"
                 )
+            if version in (1, 2):  # v2 -> v3
+                self.conn.execute("ALTER TABLE runs ADD COLUMN judge TEXT")
+                self.conn.execute("ALTER TABLE check_results ADD COLUMN score INTEGER")
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -89,11 +94,13 @@ class Store:
         base_url: str,
         params: dict[str, Any],
         document_format: str = "plain",
+        judge: str | None = None,
     ) -> int:
         with self.conn:
             cursor = self.conn.execute(
                 "INSERT INTO runs (suite_name, suite_path, model, base_url, params,"
-                " document_format, status, started_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)",
+                " document_format, judge, status, started_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)",
                 (
                     suite_name,
                     suite_path,
@@ -101,6 +108,7 @@ class Store:
                     base_url,
                     json.dumps(params),
                     document_format,
+                    judge,
                     _now(),
                 ),
             )
@@ -132,9 +140,17 @@ class Store:
             )
             self.conn.executemany(
                 "INSERT INTO check_results (case_result_id, position, type, passed, detail,"
-                " config) VALUES (?, ?, ?, ?, ?, ?)",
+                " config, score) VALUES (?, ?, ?, ?, ?, ?, ?)",
                 [
-                    (cursor.lastrowid, i, c.check, c.passed, c.detail, json.dumps(c.config))
+                    (
+                        cursor.lastrowid,
+                        i,
+                        c.check,
+                        c.passed,
+                        c.detail,
+                        json.dumps(c.config),
+                        c.score,
+                    )
                     for i, c in enumerate(result.checks)
                 ],
             )
@@ -184,6 +200,7 @@ class Store:
                             passed=bool(k["passed"]),
                             detail=k["detail"],
                             config=json.loads(k["config"]),
+                            score=k["score"],
                         )
                         for k in checks
                     ],

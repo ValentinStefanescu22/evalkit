@@ -264,3 +264,43 @@ def test_mock_script_keys_by_the_message_sent() -> None:
 def test_mock_script_rejects_unknown_case_ids() -> None:
     with pytest.raises(SuiteError, match="not in demo: capitl"):
         mock_script(SUITE, {"capitl": "Bucharest"})
+
+
+RUBRIC_SUITE = Suite.model_validate(
+    {
+        "name": "open",
+        "cases": [
+            {
+                "id": "explain",
+                "prompt": "Explain recursion.",
+                "checks": [
+                    {"type": "contains", "value": "itself"},
+                    {"type": "rubric", "rubric": "Mentions a base case."},
+                ],
+            }
+        ],
+    }
+)
+
+
+def test_rubric_check_goes_to_the_judge(tmp_path: Path) -> None:
+    store = Store(tmp_path / "evalkit.db")
+    run_id = store.start_run("open", "open.yaml", "mock", "url", {}, judge="mock-judge")
+    model = MockProvider({"Explain recursion.": "A function that calls itself."})
+    judge = MockProvider({}, default='{"reasoning": "No base case.", "score": 2}')
+
+    [result] = run_suite(run_id, RUBRIC_SUITE, model, store, judge=judge)
+
+    contains, rubric = result.checks
+    assert (contains.check, contains.passed, contains.score) == ("contains", True, None)
+    assert (rubric.check, rubric.passed, rubric.score) == ("rubric", False, 2)
+    assert rubric.config == {"type": "rubric", "rubric": "Mentions a base case.", "min_score": 4}
+    assert store.load_results(run_id)[0].checks[1].score == 2
+
+
+def test_rubric_without_judge_fails_the_run(tmp_path: Path) -> None:
+    store = Store(tmp_path / "evalkit.db")
+    run_id = store.start_run("open", "open.yaml", "mock", "url", {})
+    with pytest.raises(ValueError, match="explain has a rubric check but no judge"):
+        run_suite(run_id, RUBRIC_SUITE, MockProvider({}), store)
+    assert store.conn.execute("SELECT status FROM runs").fetchone()[0] == "failed"

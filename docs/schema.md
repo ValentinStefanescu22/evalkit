@@ -1,7 +1,7 @@
 # Database schema
 
 evalkit stores every run in a SQLite file (default `./evalkit.db`, change with `--db`).
-The schema lives in `src/evalkit/store.py`; its version is kept in `PRAGMA user_version` (currently **2**).
+The schema lives in `src/evalkit/store.py`; its version is kept in `PRAGMA user_version` (currently **3**).
 Older files are upgraded automatically when evalkit opens them (see *Versions* below).
 
 ```
@@ -22,6 +22,7 @@ per repeat (`--repeats N` gives N rows per case), and each case result has one *
 | `base_url` | TEXT | server the model was called on |
 | `params` | TEXT (JSON) | model settings sent with every request, e.g. `{"temperature": 0}` (`--temperature` overrides it) |
 | `document_format` | TEXT | `plain` or `delimited`: how documents and tool output were shown (v2) |
+| `judge` | TEXT | model that graded rubric checks (`--judge`), NULL if none (v3) |
 | `status` | TEXT | `running`, `completed` or `failed` |
 | `error` | TEXT | why the run failed (NULL otherwise) |
 | `started_at`, `finished_at` | TEXT | ISO-8601 timestamps in UTC |
@@ -52,10 +53,13 @@ per repeat (`--repeats N` gives N rows per case), and each case result has one *
 | `id` | INTEGER PK | |
 | `case_result_id` | INTEGER → `case_results.id` | |
 | `position` | INTEGER | order of the check within its case (0, 1, ...) |
-| `type` | TEXT | `contains`, `not_contains`, `regex`, `valid_json`, `tool_call`, `injection` |
+| `type` | TEXT | `contains`, `not_contains`, `regex`, `valid_json`, `tool_call`, `injection`, `rubric` |
 | `passed` | INTEGER 0/1 | |
 | `detail` | TEXT | why it failed (empty if passed) |
 | `config` | TEXT (JSON) | the check's settings, so results stay readable after the suite file changes |
+| `score` | INTEGER | the judge's 1-5 score for `rubric` checks; NULL for other checks and for unusable judge replies (v3) |
+
+For `rubric` checks, `detail` always holds the judge's reasoning (`score 3/5 (needs 4): ...`), also when the check passed.
 
 ## Example queries
 
@@ -74,6 +78,11 @@ SELECT case_id, sum(passed) AS k, count(*) AS n FROM case_results WHERE run_id =
 -- did a case give the same answer every repeat? (1 = yes)
 SELECT case_id, count(DISTINCT answer) AS distinct_answers
 FROM case_results WHERE run_id = 7 GROUP BY case_id;
+
+-- judge scores per case in run 7 (rubric checks)
+SELECT c.case_id, k.score, k.detail
+FROM case_results c JOIN check_results k ON k.case_result_id = c.id
+WHERE c.run_id = 7 AND k.type = 'rubric';
 
 -- prompt injection: attack success rate per tag, plain vs delimited
 -- (json_each splits the JSON tag list into rows)
@@ -103,3 +112,4 @@ committed and read by CI, which has no `evalkit.db`.
 |---|---|
 | 1 | initial schema (milestone 4) |
 | 2 | `runs.document_format` added (milestone 5); v1 files get the column with `'plain'` for old runs |
+| 3 | `runs.judge` and `check_results.score` added (milestone 8); old rows get NULL |

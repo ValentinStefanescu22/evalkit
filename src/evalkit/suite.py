@@ -6,7 +6,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import Field, TypeAdapter, ValidationError, model_validator
 
-from evalkit.checks import Check, ToolCallCheck
+from evalkit.checks import Check, RubricCheck, ToolCallCheck
 from evalkit.models import Response, StrictModel, ToolCall, ToolDef
 
 # How untrusted text (documents, tool output) is put into the prompt.
@@ -56,6 +56,11 @@ class Suite(StrictModel):
     description: str = ""
     defaults: Defaults = Field(default_factory=Defaults)
     cases: list[Case] = Field(min_length=1)
+
+    # True if some case needs an LLM judge (`run --judge`).
+    @property
+    def uses_judge(self) -> bool:
+        return any(isinstance(c, RubricCheck) for case in self.cases for c in case.checks)
 
     @model_validator(mode="after")
     def unique_case_ids(self) -> "Suite":

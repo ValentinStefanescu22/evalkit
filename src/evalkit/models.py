@@ -1,5 +1,6 @@
 # Data shapes shared by providers, checks and storage.
 
+import re
 from typing import Any, Literal
 
 from jsonschema import Draft202012Validator
@@ -19,6 +20,20 @@ def ensure_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
     except SchemaError as e:
         raise ValueError(f"invalid JSON schema: {e.message}") from e
     return schema
+
+
+# Every tag evalkit wraps untrusted text in: documents and tool output (milestone 5),
+# and the judge's question, rubric and answer (milestone 8).
+UNTRUSTED_TAGS = ("document", "tool_output", "question", "rubric", "answer")
+
+# Matches closing tags like </document> or </ ANSWER > hidden in untrusted text.
+_CLOSING_TAG = re.compile(rf"</\s*({'|'.join(UNTRUSTED_TAGS)})\s*>", re.IGNORECASE)
+
+
+# Wraps untrusted text in tags. Closing tags inside it are removed first, so an attacker
+# can't end the block early and make the rest look like trusted instructions.
+def wrap_untrusted(tag: str, text: str) -> str:
+    return f"<{tag}>\n{_CLOSING_TAG.sub('', text)}\n</{tag}>"
 
 
 # A tool the model may call. `parameters` is a JSON schema describing its arguments.
@@ -65,6 +80,8 @@ class CheckResult(BaseModel):
     detail: str = ""
     # The check's settings, saved with the result so reports show exactly what was checked.
     config: dict[str, Any] = Field(default_factory=dict)
+    # The judge's 1-5 score, for rubric checks only (None for every other check).
+    score: int | None = None
 
 
 # Everything about one case's outcome: what was asked, what came back, how it was graded.
