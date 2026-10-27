@@ -133,13 +133,22 @@ def open_old(tmp_path: Path, script: str) -> Store:
     return Store(path)
 
 
-@pytest.mark.parametrize("script", [V1_DB, V2_DB], ids=["v1", "v2"])
+# After milestone 8: v3 adds runs.judge and check_results.score.
+V3_DB = (
+    V2_DB.replace("error TEXT,", "judge TEXT, error TEXT,")
+    .replace("config TEXT NOT NULL\n", "config TEXT NOT NULL, score INTEGER\n")
+    .replace("PRAGMA user_version = 2", "PRAGMA user_version = 3")
+)
+
+
+@pytest.mark.parametrize("script", [V1_DB, V2_DB, V3_DB], ids=["v1", "v2", "v3"])
 def test_migrates_old_database_keeping_old_runs(tmp_path: Path, script: str) -> None:
     store = open_old(tmp_path, script)
     assert store.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
     run = store.get_run(1)
     assert run is not None
     assert (run["suite_name"], run["document_format"], run["judge"]) == ("basic_qa", "plain", None)
+    assert run["source_run"] is None
     # Old results load, with no score (they were never judged).
     [result] = store.load_results(1)
     assert result.response.text == "Bucharest."
@@ -180,3 +189,11 @@ def test_judge_and_score_saved(tmp_path: Path) -> None:
     run = store.get_run(run_id)
     assert run is not None and run["judge"] == "llama3.2:3b"
     assert [c.score for c in store.load_results(run_id)[0].checks] == [None, None, 4]
+
+
+def test_source_run_saved(tmp_path: Path) -> None:
+    store = Store(tmp_path / "evalkit.db")
+    first = store.start_run("s", "p", "m", "u", {})
+    second = store.start_run("s", "p", "m", "u", {}, judge="j", source_run=first)
+    run = store.get_run(second)
+    assert run is not None and run["source_run"] == first

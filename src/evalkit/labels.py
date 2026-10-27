@@ -183,6 +183,14 @@ def match_judge(
             raise LabelError(
                 f"run #{run_id} has no judged answer {label.case_id}, repeat {label.repeat}"
             )
+        # Labels can be compared with a rejudged run (same answers, new judge). Make sure
+        # they really are the same answers: never compare labels with different text.
+        shown = (result.response.text or "(empty answer)").strip()
+        if label.answer.strip() and label.answer.strip() != shown:
+            raise LabelError(
+                f"these labels were made for different answers: {label.case_id},"
+                f" repeat {label.repeat} doesn't match run #{run_id}"
+            )
         if label.passed is None or label.score is None:
             continue  # not labelled yet
         if rubric.score is None:

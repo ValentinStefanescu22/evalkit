@@ -2,7 +2,7 @@
 
 A command-line tool for testing language models: it runs suites of prompts against a model, grades the answers with automatic checks, stores every run in SQLite, and tells you whether a change between two runs is real or just noise. It includes a **prompt-injection suite** (22 attacks) that measures whether a model follows instructions hidden in documents and tool output, and how much a simple defense helps.
 
-Status: work in progress (milestone 9 of 11). Runs locally against [Ollama](https://ollama.com); every test runs offline.
+Status: work in progress (milestone 10 of 11). Runs locally against [Ollama](https://ollama.com), or against Claude (paid, opt-in); every test runs offline.
 
 ## Quickstart
 
@@ -27,17 +27,21 @@ run #1  basic_qa  qwen2.5:3b  plain  (5 cases)
 | command | what it does |
 |---|---|
 | `evalkit validate SUITE` | checks a suite file and lists every problem with its location |
-| `evalkit run SUITE --model M` | runs the suite and saves the results (`--repeats N`, `--temperature T`, `--document-format plain\|delimited`, `--judge MODEL`) |
+| `evalkit run SUITE --model M` | runs the suite and saves the results (`--repeats N`, `--temperature T`, `--document-format plain\|delimited`, `--judge MODEL`, `--yes` for paid models) |
 | `evalkit report RUN_ID` | writes `reports/run-<id>.md` and `.html`: pass rate with 95% intervals per check type and tag, attack success per tag, latency p50/p95, tokens, cost, failed answers |
 | `evalkit compare A B` | what got better or worse between two runs, each change marked *significant* or *noise* |
 | `evalkit baseline set RUN_ID` | saves a completed run as the baseline for its suite (`baselines/<suite>.json`) |
 | `evalkit labels export RUN_ID` | writes a judged run's answers to `labels/run-<id>.yaml` for hand labelling (judge scores hidden) |
-| `evalkit judge-agreement LABELS_FILE` | compares a labels file with the judge: percent agreement and Cohen's kappa, for pass/fail and 1–5 scores (`--reference OTHER` compares two labels files instead) |
+| `evalkit rejudge RUN_ID --judge MODEL` | grades a run's saved answers again with another judge, as a new run (the model isn't called) |
+| `evalkit judge-agreement LABELS_FILE` | compares a labels file with the judge: percent agreement and Cohen's kappa, for pass/fail and 1–5 scores (`--reference OTHER` compares two labels files instead, `--run N` compares with a rejudged run) |
 | `evalkit run ... --fail-below-baseline` | exits with code 3 if the pass rate drops significantly below the baseline |
 
 Exit codes: `0` success, `1` bad input (suite, answers file, run id or baseline), `2` model unreachable, `3` significantly below baseline.
 
-`--model` takes any model served by an OpenAI-compatible endpoint (Ollama by default, `--base-url` for others), or `mock:FILE` for scripted answers.
+`--model` and `--judge` take:
+- any model served by an OpenAI-compatible endpoint (Ollama by default, `--base-url` for others)
+- `anthropic:MODEL` for Claude, e.g. `anthropic:claude-opus-5-5`: needs `pip install 'evalkit[anthropic]'` and `ANTHROPIC_API_KEY`. Before any paid call evalkit counts the input tokens with the API's free counter, prints an expected and a worst-case cost, and stops unless you pass `--yes`. `temperature` is never sent (current Claude models reject it), and safety refusals are recorded as `(refused: <category>)` rather than silently answered by another model.
+- `mock:FILE` for scripted answers
 
 ## Suites
 
@@ -80,7 +84,7 @@ The intervals overlap: **no measurable effect** on this model, overall or per at
 
 ## How it's tested
 
-- `uv run pytest` runs ~215 tests with no network and no API keys: a mock provider with scripted answers, `httpx.MockTransport` for the HTTP provider, and pytest's `monkeypatch`.
+- `uv run pytest` runs ~240 tests with no network and no API keys: a mock provider with scripted answers, fake HTTP transports for the Ollama and Claude providers, and pytest's `monkeypatch`.
 - Type-checked with mypy in strict mode, linted and formatted with ruff.
 - GitHub Actions runs all of that on every push, plus a **regression gate**: `basic_qa` with scripted mock answers (`ci/basic_qa_answers.yaml`) must not drop significantly below the committed baseline (`ci/basic_qa_baseline.json`).
 
@@ -88,4 +92,4 @@ Run results live in SQLite; the schema is documented in [docs/schema.md](docs/sc
 
 ## Roadmap
 
-An Anthropic provider with a cost estimate before each run, and a comparison of two local models across all suites.
+Re-measuring judge agreement with Claude as the judge (`rejudge`), and a comparison of two local models across all suites.

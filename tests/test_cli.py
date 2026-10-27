@@ -8,6 +8,7 @@ import yaml
 from typer.testing import CliRunner
 
 from evalkit import __version__, cli
+from evalkit.anthropic_provider import AnthropicProvider
 from evalkit.cli import app
 from evalkit.models import Message, Response, ToolDef
 from evalkit.providers import MockProvider, Provider, ProviderError
@@ -382,3 +383,137 @@ def test_judge_agreement_bad_inputs(tmp_path: Path) -> None:
     unknown = CliRunner().invoke(app, ["judge-agreement", str(labels), "--db", db])
     assert unknown.exit_code == 1
     assert "no run #7" in unknown.output
+
+
+# A Claude provider whose HTTP calls go to a fake transport. Counting tokens answers 100;
+# a messages call answers `text`. `paths` records every request, to prove what was called.
+def fake_claude(paths: list[str], text: str = "Bucharest.", status: int = 200) -> Any:
+    import anthropic
+    import httpx2
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        paths.append(request.url.path)
+        if status != 200:
+            error = {"type": "authentication_error", "message": "no key"}
+            return httpx2.Response(status, json={"type": "error", "error": error})
+        if request.url.path.endswith("count_tokens"):
+            return httpx2.Response(200, json={"input_tokens": 100})
+        return httpx2.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-opus-5-5",
+                "content": [{"type": "text", "text": text}],
+                "stop_reason": "end_turn",
+                "stop_sequence": None,
+                "stop_details": None,
+                "usage": {"input_tokens": 100, "output_tokens": 50},
+            },
+        )
+
+    client = anthropic.Anthropic(
+        api_key="test-key",
+        base_url="https://api.anthropic.test",
+        http_client=anthropic.DefaultHttpxClient(transport=httpx2.MockTransport(handler)),
+        max_retries=0,
+    )
+    return AnthropicProvider("claude-opus-5-5", client=client)
+
+
+CLAUDE = ["run", SUITE, "--model", "anthropic:claude-opus-5-5"]
+
+
+def test_claude_run_needs_yes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    paths: list[str] = []
+    use_provider(monkeypatch, fake_claude(paths))
+    result = CliRunner().invoke(app, [*CLAUDE, "--db", str(tmp_path / "x.db")])
+    assert result.exit_code == 1
+    assert "cost estimate (Claude API, paid):" in result.output
+    assert "claude-opus-5-5 answering: 5 calls, 500 input tokens (counted)" in result.output
+    assert "re-run with --yes to spend this" in result.output
+    # Only free token counting happened: not a single paid call, and nothing saved.
+    assert paths == ["/v1/messages/count_tokens"] * 5
+    assert not (tmp_path / "x.db").exists()
+
+
+def test_claude_run_with_yes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    paths: list[str] = []
+    use_provider(monkeypatch, fake_claude(paths))
+    db = tmp_path / "x.db"
+    result = CliRunner().invoke(app, [*CLAUDE, "--db", str(db), "--yes"])
+    assert result.exit_code == 0, result.output
+    assert "note: not sending temperature (Claude rejects it)" in result.output
+    assert "anthropic:claude-opus-5-5  plain  at https://api.anthropic.test" in result.output
+    # 5 calls x (100 in x $4/M + 50 out x $20/M) = 5 x $0.0014
+    assert "spent $0.0070 on the Claude API" in result.output
+    assert paths.count("/v1/messages") == 5
+    row = sqlite3.connect(db).execute("SELECT params, base_url FROM runs").fetchone()
+    assert row == ("{}", "https://api.anthropic.test")  # temperature not recorded as sent
+
+
+def test_claude_rejects_temperature_flag(tmp_path: Path) -> None:
+    result = CliRunner().invoke(app, [*CLAUDE, "--temperature", "0.7", "--db", str(tmp_path / "x")])
+    assert result.exit_code == 1
+    assert "--temperature can't be used with Claude" in result.output
+
+
+def test_claude_without_credentials_fails_before_spending(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    paths: list[str] = []
+    use_provider(monkeypatch, fake_claude(paths, status=401))
+    result = CliRunner().invoke(app, [*CLAUDE, "--db", str(tmp_path / "x.db"), "--yes"])
+    assert result.exit_code == 2
+    assert "set ANTHROPIC_API_KEY" in result.output
+    assert paths == ["/v1/messages/count_tokens"]
+
+
+def test_unknown_claude_model_exits_1(tmp_path: Path) -> None:
+    args = ["run", SUITE, "--model", "anthropic:claude-nope", "--db", str(tmp_path / "x.db")]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 1
+    assert "no price known for 'claude-nope'" in result.output
+
+
+# open_answers run with a lenient judge, then rejudged by a strict one: same answers, new
+# scores, and the labels made for the first run can be compared with the second.
+def test_rejudge_then_agreement(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    db = tmp_path / "evalkit.db"
+    use_provider(monkeypatch, MockProvider({}, default='{"reasoning": "Fine.", "score": 4}'))
+    base = ["--db", str(db)]
+    CliRunner().invoke(app, ["run", OPEN, "--model", "m", "--judge", "j", *base])
+    out = tmp_path / "labels.yaml"
+    CliRunner().invoke(app, ["labels", "export", "1", "--out", str(out), *base])
+    data = yaml.safe_load(out.read_text())
+    for entry in data["answers"]:
+        entry["pass"], entry["score"] = False, 2
+    out.write_text(yaml.safe_dump(data))
+
+    use_provider(monkeypatch, MockProvider({}, default='{"reasoning": "Too vague.", "score": 2}'))
+    result = CliRunner().invoke(app, ["rejudge", "1", "--judge", "strict", *base])
+    assert result.exit_code == 0, result.output
+    assert "run #2  rejudge of run #1  open_answers  m  judge strict  (8 answers)" in result.output
+    run = sqlite3.connect(db).execute("SELECT judge, source_run FROM runs WHERE id = 2").fetchone()
+    assert run == ("strict", 1)
+
+    old = CliRunner().invoke(app, ["judge-agreement", str(out), *base])
+    new = CliRunner().invoke(app, ["judge-agreement", str(out), "--run", "2", *base])
+    assert "agreement 0/8 0%" in old.output  # the lenient judge passed what you failed
+    assert "agreement 8/8 100%" in new.output
+    assert "A = judge strict" in new.output
+
+
+def test_rejudge_with_claude_needs_yes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    db = tmp_path / "evalkit.db"
+    use_provider(monkeypatch, MockProvider({}, default='{"reasoning": "Fine.", "score": 4}'))
+    CliRunner().invoke(app, ["run", OPEN, "--model", "m", "--judge", "j", "--db", str(db)])
+    paths: list[str] = []
+    use_provider(monkeypatch, fake_claude(paths))
+    args = ["rejudge", "1", "--judge", "anthropic:claude-opus-5-5", "--db", str(db)]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 1
+    assert "claude-opus-5-5 as judge: 8 calls" in result.output
+    assert paths == ["/v1/messages/count_tokens"] * 8
+    assert sqlite3.connect(db).execute("SELECT count(*) FROM runs").fetchone()[0] == 1

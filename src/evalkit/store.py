@@ -8,7 +8,7 @@ from typing import Any
 
 from evalkit.models import CaseResult, CheckResult, Response, ToolCall
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE runs (
@@ -20,6 +20,7 @@ CREATE TABLE runs (
     params      TEXT NOT NULL,              -- JSON
     document_format TEXT NOT NULL DEFAULT 'plain',  -- 'plain' or 'delimited'
     judge       TEXT,                       -- model that graded rubric checks (v3)
+    source_run  INTEGER REFERENCES runs (id),  -- rejudge: answers copied from this run (v4)
     status      TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
     error       TEXT,
     started_at  TEXT NOT NULL,              -- ISO-8601, UTC
@@ -81,6 +82,10 @@ class Store:
             if version in (1, 2):  # v2 -> v3
                 self.conn.execute("ALTER TABLE runs ADD COLUMN judge TEXT")
                 self.conn.execute("ALTER TABLE check_results ADD COLUMN score INTEGER")
+            if version in (1, 2, 3):  # v3 -> v4
+                self.conn.execute(
+                    "ALTER TABLE runs ADD COLUMN source_run INTEGER REFERENCES runs (id)"
+                )
             self.conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -95,12 +100,13 @@ class Store:
         params: dict[str, Any],
         document_format: str = "plain",
         judge: str | None = None,
+        source_run: int | None = None,
     ) -> int:
         with self.conn:
             cursor = self.conn.execute(
                 "INSERT INTO runs (suite_name, suite_path, model, base_url, params,"
-                " document_format, judge, status, started_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)",
+                " document_format, judge, source_run, status, started_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
                 (
                     suite_name,
                     suite_path,
@@ -109,6 +115,7 @@ class Store:
                     json.dumps(params),
                     document_format,
                     judge,
+                    source_run,
                     _now(),
                 ),
             )

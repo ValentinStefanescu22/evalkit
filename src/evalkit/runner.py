@@ -1,6 +1,7 @@
 # Runs every case of a suite against a provider, grades the answers, and saves the results.
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 from evalkit.checks import RubricCheck
 from evalkit.judge import grade
@@ -84,6 +85,18 @@ def run_case(
         tools=case.tools or None,
         params=suite.defaults.params,
     )
+    return CaseResult(
+        case_id=case.id,
+        tags=case.tags,
+        prompt=case.prompt,
+        response=response,
+        checks=grade_response(case, response, judge),
+    )
+
+
+# Runs every check of `case` on one response. Shared by run (fresh answers) and rejudge
+# (saved answers).
+def grade_response(case: Case, response: Response, judge: Provider | None) -> list[CheckResult]:
     checks = []
     for check in case.checks:
         result: CheckResult
@@ -95,9 +108,22 @@ def run_case(
         else:
             result = check.run(response)
         checks.append(result.model_copy(update={"config": check.model_dump()}))
-    return CaseResult(
-        case_id=case.id, tags=case.tags, prompt=case.prompt, response=response, checks=checks
-    )
+    return checks
+
+
+# Wraps the work of a run: marks it completed if the block finishes, or failed (keeping
+# saved cases) if anything goes wrong, including Ctrl-C (KeyboardInterrupt), then re-raises.
+@contextmanager
+def _finishing(store: Store, run_id: int) -> Iterator[None]:
+    try:
+        yield
+    except ProviderError as e:
+        store.finish_run(run_id, "failed", str(e))
+        raise
+    except BaseException as e:
+        store.finish_run(run_id, "failed", type(e).__name__)
+        raise
+    store.finish_run(run_id, "completed")
 
 
 # Runs all cases in order, saving each as soon as it's graded. `on_result` lets the CLI
@@ -114,7 +140,7 @@ def run_suite(
     judge: Provider | None = None,
 ) -> list[CaseResult]:
     results = []
-    try:
+    with _finishing(store, run_id):
         for repeat in range(repeats):
             for case in suite.cases:
                 result = run_case(suite, case, provider, document_format, judge)
@@ -123,12 +149,34 @@ def run_suite(
                 results.append(result)
                 if on_result:
                     on_result(result)
-    except ProviderError as e:
-        store.finish_run(run_id, "failed", str(e))
-        raise
-    except BaseException as e:
-        # Also covers Ctrl-C (KeyboardInterrupt), so the run isn't left as "running".
-        store.finish_run(run_id, "failed", type(e).__name__)
-        raise
-    store.finish_run(run_id, "completed")
+    return results
+
+
+# Grades a run's saved answers again (with a new judge) into run `run_id`. The model is
+# never called: each saved Response goes through the case's checks as it is.
+def rejudge_suite(
+    run_id: int,
+    suite: Suite,
+    saved: list[CaseResult],
+    judge: Provider,
+    store: Store,
+    on_result: Callable[[CaseResult], None] | None = None,
+) -> list[CaseResult]:
+    cases = {case.id: case for case in suite.cases}
+    results = []
+    with _finishing(store, run_id):
+        for old in saved:
+            case = cases[old.case_id]
+            result = CaseResult(
+                case_id=old.case_id,
+                repeat_index=old.repeat_index,
+                tags=old.tags,
+                prompt=old.prompt,
+                response=old.response,
+                checks=grade_response(case, old.response, judge),
+            )
+            store.save_case(run_id, result)
+            results.append(result)
+            if on_result:
+                on_result(result)
     return results

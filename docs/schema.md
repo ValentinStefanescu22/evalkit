@@ -1,7 +1,7 @@
 # Database schema
 
 evalkit stores every run in a SQLite file (default `./evalkit.db`, change with `--db`).
-The schema lives in `src/evalkit/store.py`; its version is kept in `PRAGMA user_version` (currently **3**).
+The schema lives in `src/evalkit/store.py`; its version is kept in `PRAGMA user_version` (currently **4**).
 Older files are upgraded automatically when evalkit opens them (see *Versions* below).
 
 ```
@@ -19,10 +19,11 @@ per repeat (`--repeats N` gives N rows per case), and each case result has one *
 | `suite_name` | TEXT | `name` from the suite file |
 | `suite_path` | TEXT | path the suite was loaded from |
 | `model` | TEXT | model name, e.g. `qwen2.5:3b` |
-| `base_url` | TEXT | server the model was called on |
+| `base_url` | TEXT | server the model was called on (for Claude: the URL the SDK really used) |
 | `params` | TEXT (JSON) | model settings sent with every request, e.g. `{"temperature": 0}` (`--temperature` overrides it) |
 | `document_format` | TEXT | `plain` or `delimited`: how documents and tool output were shown (v2) |
 | `judge` | TEXT | model that graded rubric checks (`--judge`), NULL if none (v3) |
+| `source_run` | INTEGER → `runs.id` | for `evalkit rejudge`: the run whose answers were copied and graded again; NULL for normal runs (v4) |
 | `status` | TEXT | `running`, `completed` or `failed` |
 | `error` | TEXT | why the run failed (NULL otherwise) |
 | `started_at`, `finished_at` | TEXT | ISO-8601 timestamps in UTC |
@@ -113,3 +114,4 @@ committed and read by CI, which has no `evalkit.db`.
 | 1 | initial schema (milestone 4) |
 | 2 | `runs.document_format` added (milestone 5); v1 files get the column with `'plain'` for old runs |
 | 3 | `runs.judge` and `check_results.score` added (milestone 8); old rows get NULL |
+| 4 | `runs.source_run` added (milestone 10); old rows get NULL |

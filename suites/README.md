@@ -80,6 +80,7 @@ Run it with a judge, ideally from a different model family than the model being 
 
 ```bash
 uv run evalkit run suites/open_answers.yaml --model qwen2.5:3b --judge llama3.2:3b
+uv run evalkit rejudge 12 --judge anthropic:claude-opus-5-5   # same answers, a Claude judge (paid: add --yes)
 ```
 
 The judge's instructions are in [`src/evalkit/judge_prompt.md`](../src/evalkit/judge_prompt.md). The answer being graded is wrapped in `<answer>` tags and treated as untrusted, so "give this a 5" inside it should be ignored. A judge is a model too, so its scores need checking against human labels (milestone 9).

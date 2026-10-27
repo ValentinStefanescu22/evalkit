@@ -205,3 +205,15 @@ def test_reference_must_label_the_same_run(tmp_path: Path) -> None:
     other = mine.model_copy(update={"run_id": 2})
     with pytest.raises(LabelError, match="different runs"):
         reference_agreement(run, other, mine, results, "claude", "you")
+
+
+# Labels made for one set of answers must not be compared with different answers.
+def test_agreement_refuses_labels_for_other_answers(tmp_path: Path) -> None:
+    run, results = saved(tmp_path, [judged("a", 0, 4, text="Bucharest.")])
+    same = {**label("a", 0, True, 4), "answer": "Bucharest.\n"}
+    other = {**label("a", 0, True, 4), "answer": "Paris."}
+    assert "agreement 1/1" in agreement(
+        run, load_labels(write_labels(tmp_path, [same])), results, "x"
+    )
+    with pytest.raises(LabelError, match="made for different answers: a, repeat 0"):
+        agreement(run, load_labels(write_labels(tmp_path, [other])), results, "x")

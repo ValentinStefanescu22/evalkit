@@ -10,6 +10,7 @@ from evalkit.runner import (
     build_messages,
     judge_question,
     mock_script,
+    rejudge_suite,
     run_suite,
 )
 from evalkit.store import Store
@@ -354,3 +355,28 @@ class RecordingJudge(MockProvider):
     ) -> Response:
         self.messages.append(messages)
         return super().complete(messages, tools, params)
+
+
+# Rejudge: the saved answers are graded again by a new judge. The model is never asked.
+def test_rejudge_regrades_saved_answers(tmp_path: Path) -> None:
+    store = Store(tmp_path / "evalkit.db")
+    first = store.start_run("open", "open.yaml", "mock", "url", {}, judge="old")
+    model = MockProvider({"Explain recursion.": "A function that calls itself."})
+    old_judge = MockProvider({}, default='{"reasoning": "Fine.", "score": 4}')
+    run_suite(first, RUBRIC_SUITE, model, store, judge=old_judge, repeats=2)
+
+    second = store.start_run("open", "open.yaml", "mock", "url", {}, judge="new", source_run=first)
+    new_judge = MockProvider({}, default='{"reasoning": "No base case.", "score": 2}')
+    results = rejudge_suite(second, RUBRIC_SUITE, store.load_results(first), new_judge, store)
+
+    assert [(r.case_id, r.repeat_index) for r in results] == [("explain", 0), ("explain", 1)]
+    saved = store.load_results(second)
+    assert [r.response.text for r in saved] == ["A function that calls itself."] * 2
+    # The deterministic check is re-run (same result); the rubric gets the new judge's score.
+    assert [(c.check, c.passed, c.score) for c in saved[0].checks] == [
+        ("contains", True, None),
+        ("rubric", False, 2),
+    ]
+    assert store.conn.execute("SELECT status FROM runs WHERE id = ?", (second,)).fetchone()[0] == (
+        "completed"
+    )
