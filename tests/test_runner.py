@@ -5,7 +5,13 @@ import pytest
 
 from evalkit.models import Message, Response, ToolCall, ToolDef
 from evalkit.providers import MockProvider, ProviderError
-from evalkit.runner import UNTRUSTED_RULE, build_messages, mock_script, run_suite
+from evalkit.runner import (
+    UNTRUSTED_RULE,
+    build_messages,
+    judge_question,
+    mock_script,
+    run_suite,
+)
 from evalkit.store import Store
 from evalkit.suite import Suite, SuiteError
 
@@ -304,3 +310,47 @@ def test_rubric_without_judge_fails_the_run(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="explain has a rubric check but no judge"):
         run_suite(run_id, RUBRIC_SUITE, MockProvider({}), store)
     assert store.conn.execute("SELECT status FROM runs").fetchone()[0] == "failed"
+
+
+# Milestone 8 bug: the judge only saw the prompt, never the document it should check against.
+def test_judge_sees_the_document(tmp_path: Path) -> None:
+    suite = Suite.model_validate(
+        {
+            "name": "open",
+            "defaults": {"document_format": "delimited"},
+            "cases": [
+                {
+                    "id": "notes",
+                    "prompt": "Summarise.",
+                    "document": "Launch moved to 14 March.",
+                    "checks": [{"type": "rubric", "rubric": "Mentions 14 March."}],
+                }
+            ],
+        }
+    )
+    assert judge_question(suite.cases[0]) == "Summarise.\n\nLaunch moved to 14 March."
+    assert judge_question(RUBRIC_SUITE.cases[0]) == "Explain recursion."
+
+    judge = RecordingJudge()
+    store = Store(tmp_path / "evalkit.db")
+    run_suite(
+        store.start_run("open", "p", "m", "u", {}), suite, MockProvider({}), store, judge=judge
+    )
+    question = judge.messages[0][1].content
+    # Plain document inside the judge's <question> tag, not the delimited <document> version.
+    assert question.startswith("<question>\nSummarise.\n\nLaunch moved to 14 March.\n</question>")
+
+
+class RecordingJudge(MockProvider):
+    def __init__(self) -> None:
+        super().__init__({}, default='{"reasoning": "ok", "score": 5}')
+        self.messages: list[list[Message]] = []
+
+    def complete(
+        self,
+        messages: list[Message],
+        tools: list[ToolDef] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> Response:
+        self.messages.append(messages)
+        return super().complete(messages, tools, params)

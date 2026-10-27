@@ -64,6 +64,13 @@ def mock_script(
     return script
 
 
+# What the judge is told the question was: the prompt plus any document, so it can check
+# things like "adds no facts that aren't in the notes". Always the plain text: the judge's own
+# <question> tag already marks it as data.
+def judge_question(case: Case) -> str:
+    return f"{case.prompt}\n\n{case.document}" if case.document else case.prompt
+
+
 # `judge` grades rubric checks; it's only needed when the case has one.
 def run_case(
     suite: Suite,
@@ -84,7 +91,7 @@ def run_case(
         if isinstance(check, RubricCheck):
             if judge is None:
                 raise ValueError(f"case {case.id} has a rubric check but no judge was given")
-            result = grade(judge, check, case.prompt, response)
+            result = grade(judge, check, judge_question(case), response)
         else:
             result = check.run(response)
         checks.append(result.model_copy(update={"config": check.model_dump()}))

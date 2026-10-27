@@ -80,7 +80,7 @@ class SuiteError(Exception):
 
 
 # The first gates shared by every YAML file we read: readable, valid YAML, a mapping.
-def _read_yaml_mapping(path: Path, what: str) -> dict[str, Any]:
+def read_yaml_mapping(path: Path, what: str) -> dict[str, Any]:
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as e:
@@ -100,7 +100,7 @@ def _read_yaml_mapping(path: Path, what: str) -> dict[str, Any]:
 
 def load_suite(path: str | Path) -> Suite:
     path = Path(path)
-    data = _read_yaml_mapping(path, "`name` and `cases`")
+    data = read_yaml_mapping(path, "`name` and `cases`")
     try:
         return Suite.model_validate(data)
     except ValidationError as e:
@@ -139,7 +139,7 @@ _ANSWERS = TypeAdapter(dict[str, str | MockAnswer])
 # Reads a mock answers file ({case_id: answer}) for `--model mock:FILE`.
 def load_answers(path: str | Path) -> dict[str, str | Response]:
     path = Path(path)
-    data = _read_yaml_mapping(path, "case ids as keys")
+    data = read_yaml_mapping(path, "case ids as keys")
     try:
         answers = _ANSWERS.validate_python(data)
     except ValidationError as e:

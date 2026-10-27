@@ -17,6 +17,13 @@ from evalkit.baseline import (
     make_baseline,
     save_baseline,
 )
+from evalkit.labels import (
+    LabelError,
+    agreement,
+    export_labels,
+    load_labels,
+    reference_agreement,
+)
 from evalkit.models import CaseResult
 from evalkit.providers import (
     OLLAMA_URL,
@@ -26,13 +33,15 @@ from evalkit.providers import (
     ProviderError,
 )
 from evalkit.report import build_report, compare_runs, format_rate, to_html, to_markdown
-from evalkit.runner import mock_script, run_suite
+from evalkit.runner import judge_question, mock_script, run_suite
 from evalkit.store import Store
 from evalkit.suite import DocumentFormat, Suite, SuiteError, load_answers, load_suite
 
 app = typer.Typer(help="LLM evaluation and prompt-injection test harness.")
 baseline_app = typer.Typer(help="Save a known-good run to compare new runs against.")
 app.add_typer(baseline_app, name="baseline")
+labels_app = typer.Typer(help="Hand labels for checking the LLM judge.")
+app.add_typer(labels_app, name="labels")
 
 
 @app.command(help="Print the evalkit version.")
@@ -251,3 +260,66 @@ def set_baseline(
     save_baseline(path, new)
     typer.echo(f"baseline for {new.suite}: {format_rate(new.passed, new.total)} (run #{run_id})")
     typer.echo(f"saved to {path}")
+
+
+@labels_app.command(
+    "export", help="Write a run's judged answers to a YAML file for hand labelling."
+)
+def export(
+    run_id: int,
+    db: Annotated[Path, typer.Option(help="SQLite file with results")] = Path("evalkit.db"),
+    out: Annotated[
+        Path | None, typer.Option(help="Labels file to write [default: labels/run-<id>.yaml]")
+    ] = None,
+) -> None:
+    path = out or Path("labels") / f"run-{run_id}.yaml"
+    # Never overwrite: that file may hold hours of your labelling.
+    if path.exists():
+        typer.echo(f"{path} already exists; not overwriting your labels", err=True)
+        raise typer.Exit(code=1)
+    with closing(Store(db)) as store:
+        run, results = _load_run_or_exit(store, run_id, db)
+    # The DB stores only the prompt; the suite file also has the document the judge saw.
+    try:
+        questions = {c.id: judge_question(c) for c in load_suite(run["suite_path"]).cases}
+    except SuiteError:
+        typer.echo(f"warning: can't read {run['suite_path']}; showing prompts only", err=True)
+        questions = {}
+    try:
+        text, count = export_labels(run, results, questions)
+    except LabelError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1) from e
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    typer.echo(f"wrote {path}: {count} answers to label (pass: true/false, score: 1-5)")
+
+
+@app.command(help="Compare a labels file with the LLM judge: agreement and Cohen's kappa.")
+def judge_agreement(
+    labels_file: Path,
+    db: Annotated[Path, typer.Option(help="SQLite file with results")] = Path("evalkit.db"),
+    reference: Annotated[
+        Path | None,
+        typer.Option(help="Compare with this labels file instead of the judge"),
+    ] = None,
+) -> None:
+    try:
+        labels = load_labels(labels_file)
+        other = load_labels(reference) if reference else None
+    except LabelError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1) from e
+    with closing(Store(db)) as store:
+        run, results = _load_run_or_exit(store, labels.run_id, db)
+    try:
+        if reference and other is not None:
+            text = reference_agreement(
+                run, other, labels, results, str(reference), str(labels_file)
+            )
+        else:
+            text = agreement(run, labels, results, str(labels_file))
+    except LabelError as e:
+        typer.echo(str(e), err=True)
+        raise typer.Exit(code=1) from e
+    typer.echo(text)

@@ -84,6 +84,19 @@ uv run evalkit run suites/open_answers.yaml --model qwen2.5:3b --judge llama3.2:
 
 The judge's instructions are in [`src/evalkit/judge_prompt.md`](../src/evalkit/judge_prompt.md). The answer being graded is wrapped in `<answer>` tags and treated as untrusted, so "give this a 5" inside it should be ignored. A judge is a model too, so its scores need checking against human labels (milestone 9).
 
+### Checking the judge against your own labels
+
+A judge's score is only useful if it agrees with a careful human. To measure that:
+
+```bash
+uv run evalkit labels export 12          # writes labels/run-12.yaml, judge scores hidden
+# fill in `pass: true/false` and `score: 1-5` for each answer (partial is fine)
+uv run evalkit judge-agreement labels/run-12.yaml
+uv run evalkit judge-agreement labels/run-12.yaml --reference labels/run-12.claude.yaml   # two labellers
+```
+
+It reports percent agreement and **Cohen's kappa** (agreement beyond what luck would give: 1 = perfect, 0 = no better than chance) for pass/fail and for the 1–5 score. In the output, A is the judge (or the `--reference` file) and B is your labels file. It also shows whether A is more lenient than B, whether the answers it over-scores are longer (verbosity bias), and lists every pass/fail disagreement with the judge's reasoning.
+
 ## Scripted answers (`--model mock:FILE`)
 
 For CI and demos, any suite can run without a model: `FILE` maps case ids to answers (text, or `tool_calls`). See `ci/basic_qa_answers.yaml`:

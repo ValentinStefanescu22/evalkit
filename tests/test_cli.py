@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from evalkit import __version__, cli
@@ -321,3 +322,63 @@ def test_judge_cannot_be_a_mock(tmp_path: Path) -> None:
     result = CliRunner().invoke(app, args)
     assert result.exit_code == 1
     assert "--judge can't be a mock" in result.output
+
+
+# A judged run of open_answers, then export -> fill in labels -> judge-agreement.
+def test_labels_export_then_judge_agreement(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    use_provider(monkeypatch, MockProvider({}, default='{"reasoning": "Fine.", "score": 4}'))
+    db = tmp_path / "evalkit.db"
+    CliRunner().invoke(app, ["run", OPEN, "--model", "m", "--judge", "j", "--db", str(db)])
+
+    out = tmp_path / "labels" / "run-1.yaml"
+    exported = CliRunner().invoke(
+        app, ["labels", "export", "1", "--db", str(db), "--out", str(out)]
+    )
+    assert exported.exit_code == 0, exported.output
+    assert "8 answers to label" in exported.output
+    text = out.read_text()
+    # The judge saw the meeting notes, and so do you.
+    assert "Ana reported the mobile app beta" in text
+
+    empty = CliRunner().invoke(app, ["judge-agreement", str(out), "--db", str(db)])
+    assert empty.exit_code == 0
+    assert "labelled 0 of 8 answers" in empty.output
+
+    data = yaml.safe_load(text)
+    for entry in data["answers"]:
+        entry["pass"], entry["score"] = True, 4
+    data["answers"][0]["pass"], data["answers"][0]["score"] = False, 2
+    out.write_text(yaml.safe_dump(data))
+    result = CliRunner().invoke(app, ["judge-agreement", str(out), "--db", str(db)])
+    assert result.exit_code == 0, result.output
+    assert "pass/fail   agreement 7/8 88%" in result.output
+    assert "explain_recursion  repeat 0   A: pass 4   B: fail 2   'Fine.'" in result.output
+
+    # The same labels as a reference: a labels file compared with itself agrees completely.
+    args = ["judge-agreement", str(out), "--reference", str(out), "--db", str(db)]
+    same = CliRunner().invoke(app, args)
+    assert same.exit_code == 0, same.output
+    assert "agreement 8/8 100%   kappa 1.00 (almost perfect)" in same.output
+
+
+def test_labels_export_never_overwrites(tmp_path: Path) -> None:
+    existing = tmp_path / "run-1.yaml"
+    existing.write_text("my precious labels")
+    args = ["labels", "export", "1", "--db", str(tmp_path / "x.db"), "--out", str(existing)]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == 1
+    assert "already exists; not overwriting your labels" in result.output
+    assert existing.read_text() == "my precious labels"
+
+
+def test_judge_agreement_bad_inputs(tmp_path: Path) -> None:
+    db = str(tmp_path / "x.db")
+    missing = CliRunner().invoke(app, ["judge-agreement", str(tmp_path / "none.yaml"), "--db", db])
+    assert missing.exit_code == 1
+    labels = tmp_path / "l.yaml"
+    labels.write_text("run_id: 7\nanswers: []\n")
+    unknown = CliRunner().invoke(app, ["judge-agreement", str(labels), "--db", db])
+    assert unknown.exit_code == 1
+    assert "no run #7" in unknown.output
